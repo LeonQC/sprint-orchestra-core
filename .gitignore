@@ -12,6 +12,7 @@
 
 # Package Files #
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
 *.war
 *.nar
 *.ear
@@ -22,3 +23,49 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# ========== Gradle / Java build ==========
+.gradle/
+**/build/
+**/bin/
+
+# ========== IntelliJ IDEA ==========
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Local IntelliJ run configurations
+.run/
+
+# ========== Secrets & local config ==========
+.env
+.env.*
+!.env.example
+**/application-local.yml
+**/application-local.properties
+docker-compose.override.yml
+
+# ========== Python ==========
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# ========== App local data ==========
+storage/
+
+# ========== Editors ==========
+.vscode/
+
+# ========== Java tooling ==========
+*.hprof
+*.orig
+
+# ========== OS ==========
+.DS_Store
+Thumbs.db
+*.swp
+*~
