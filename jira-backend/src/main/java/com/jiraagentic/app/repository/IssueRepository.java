@@ -13,15 +13,11 @@ public interface IssueRepository extends JpaRepository<Issue, Long> {
 
     List<Issue> findBySpaceIdOrderByIssueOrderAsc(Long spaceId);
 
-    List<Issue> findBySpaceIdAndSprintIdOrderByIssueOrderAsc(Long spaceId, Long sprintId);
-
-    List<Issue> findBySpaceIdAndSprintIsNullOrderByIssueOrderAsc(Long spaceId);
-
     List<Issue> findByParentId(Long parentId);
 
     List<Issue> findByParent_IdIn(Collection<Long> parentIds);
 
     List<Issue> findBySprint_Id(Long sprintId);
 
-    boolean existsByIssueKey(String issueKey);
+    List<Issue> findDistinctByLabels_Id(Long labelId);
 }

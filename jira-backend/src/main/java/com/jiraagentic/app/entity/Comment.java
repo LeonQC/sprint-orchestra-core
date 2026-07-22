@@ -10,6 +10,7 @@ import java.time.Instant;
 @Entity
 @Table(name = "comments", indexes = {
     @Index(name = "idx_comment_issue", columnList = "issue_id"),
+    @Index(name = "idx_comment_parent", columnList = "parent_id"),
 })
 @Data
 @NoArgsConstructor
@@ -30,6 +31,14 @@ public class Comment implements Serializable {
 
     @Column(nullable = false, columnDefinition = "TEXT")
     private String content;
+
+    /** Top-level comment this replies to; null for a top-level comment. Never points at a reply. */
+    @Column(name = "parent_id")
+    private Long parentId;
+
+    /** The comment actually answered (top-level or a reply); null for a top-level comment. */
+    @Column(name = "reply_to_id")
+    private Long replyToId;
 
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;

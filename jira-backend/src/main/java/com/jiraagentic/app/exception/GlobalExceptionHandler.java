@@ -2,10 +2,12 @@ package com.jiraagentic.app.exception;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -19,6 +21,20 @@ public class GlobalExceptionHandler {
                 .body(ErrorResponse.of(HttpStatus.NOT_FOUND.value(), ex.getMessage()));
     }
 
+    /**
+     * Search runs in a separate process now, so "the search cluster is unreachable" is a dependency
+     * failure, not a bad request. 503 rather than the generic 500 below tells the caller retrying is
+     * worth doing — and keeps a search outage from reading like an application bug in the logs.
+     */
+    @ExceptionHandler(com.jiraagentic.app.search.SearchUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleSearchUnavailable(
+            com.jiraagentic.app.search.SearchUnavailableException ex) {
+        log.error("search backend unavailable", ex);
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ErrorResponse.of(HttpStatus.SERVICE_UNAVAILABLE.value(), "Search is temporarily unavailable"));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ErrorResponse> handleIllegalArgument(IllegalArgumentException ex) {
         String msg = ex.getMessage();
@@ -28,6 +44,31 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .status(HttpStatus.BAD_REQUEST)
                 .body(ErrorResponse.of(HttpStatus.BAD_REQUEST.value(), msg));
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorResponse> handleDataIntegrity(DataIntegrityViolationException ex) {
+        log.warn("Request conflicted with a database constraint", ex);
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(ErrorResponse.of(HttpStatus.CONFLICT.value(), "The requested value already exists or is in use"));
+    }
+
+    /**
+     * A thrower that already chose an HTTP status must keep it. {@link ResponseStatusException}
+     * extends {@link RuntimeException}, so without this handler it fell through to
+     * {@link #handleRuntime} and every deliberate 401/403/404 was reported to the client as a
+     * generic 500 — verified live against the space-membership guard in {@code IssueService}, and
+     * true of {@code GroupService}'s existing "Only group admins can manage this group" 403 too.
+     */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<ErrorResponse> handleResponseStatus(ResponseStatusException ex) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        if (status == null) {
+            status = HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+        String msg = ex.getReason() == null || ex.getReason().isBlank() ? status.getReasonPhrase() : ex.getReason();
+        return ResponseEntity.status(status).body(ErrorResponse.of(status.value(), msg));
     }
 
     @ExceptionHandler(RuntimeException.class)

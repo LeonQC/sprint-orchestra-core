@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,7 +20,11 @@ import java.util.Optional;
 @Slf4j
 public class UserService {
 
+    // Demo accounts' shared password. Stored only as a bcrypt hash.
+    private static final String DEMO_PASSWORD = "123";
+
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
 
     public List<User> findAll() {
         return userRepository.findAll();
@@ -42,19 +47,20 @@ public class UserService {
         user.setUsername(req.getUsername());
         user.setName(req.getName());
         user.setEmail(req.getEmail());
-        user.setPassword("123");
+        user.setPassword(passwordEncoder.encode(DEMO_PASSWORD));
         user.setAvatarColor(req.getAvatarColor());
         return userRepository.save(user);
     }
 
     public User authenticate(String username, String password) {
+        // Same message for unknown user and wrong password, so login can't be used to probe usernames.
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new RuntimeException("User not found: " + username));
+                .orElseThrow(() -> new RuntimeException("Invalid username or password"));
         if (user.getPassword() == null) {
             throw new RuntimeException("This account uses GitHub sign-in");
         }
-        if (!user.getPassword().equals(password)) {
-            throw new RuntimeException("Invalid password");
+        if (!passwordEncoder.matches(password, user.getPassword())) {
+            throw new RuntimeException("Invalid username or password");
         }
         return user;
     }
@@ -79,7 +85,7 @@ public class UserService {
             u.setName(fullName);
             // Keep username/password login working for accounts that already had a password (e.g. seeded users).
             if (u.getPassword() == null && isSeedDemoEmail(u.getEmail())) {
-                u.setPassword("123");
+                u.setPassword(passwordEncoder.encode(DEMO_PASSWORD));
             }
             return userRepository.save(u);
         }
