@@ -1,0 +1,80 @@
+# --- Web / config ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.16.2
+
+# --- Kafka ---
+aiokafka==0.12.0
+
+# --- OpenSearch (lexical retrieval / BM25; app/search/) ---
+# OpenSearch rather than Elasticsearch because this deploys to Amazon OpenSearch Service, the
+# first-party AWS managed service. The query DSL and analyzers are unchanged -- OpenSearch forked
+# from Elasticsearch 7.10 and everything this service uses predates the fork -- but the CLIENTS are
+# not interchangeable: since 7.14 the Elasticsearch client verifies an `X-Elastic-Product` response
+# header and refuses to talk to anything else, so the swap is forced rather than cosmetic.
+# The 2.x client line tracks the server in docker-compose (2.19.x).
+opensearch-py[async]==2.8.0
+
+# --- Postgres + pgvector ---
+asyncpg==0.30.0
+pgvector==0.3.6
+numpy==2.2.1
+
+# --- Ingestion ---
+tiktoken==0.8.0
+beautifulsoup4==4.12.3
+httpx==0.28.1
+tenacity==9.0.0
+anthropic==0.42.0  # contextual retrieval (app/ingest/contextualizer.py); off by default
+
+# --- Attachments (object storage + document parsing) ---
+boto3==1.35.90
+# 2.150 moved the code into docling-slim. Upgrading an existing venv from 2.14, pip's uninstall of the
+# old docling deletes files docling-slim just wrote ("No module named docling.datamodel.base_models");
+# fix with: pip install --force-reinstall --no-deps "docling-slim[standard]==2.150.0" docling==2.150.0
+docling==2.150.0
+openpyxl==3.1.5  # native worksheet names/ranges for typed XLSX provenance
+# Both already ship transitively with docling, but standalone-image attachments now call them
+# directly (app/ingest/docling_parser.py) rather than only through Docling's own pipeline, so they're
+# declared as direct dependencies here too — relying on another package's transitive deps staying the
+# same across docling version bumps would be fragile.
+easyocr==1.7.2
+Pillow==11.0.0
+# Render only selected low-quality PDF pages to PNG before sending them to the VLM.  Keeping this a
+# direct dependency makes PDF fallback work in the production image rather than accidentally relying
+# on Docling's transitive packages.
+PyMuPDF==1.24.14
+
+# --- Reranking (optional, VEC_RERANK_ENABLED=true; app/db/reranker.py) ---
+sentence-transformers==3.3.1
+
+# --- Observability (app/observability.py) ---
+prometheus-client==0.21.1
+
+# --- Tests ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+
+# --- Distributed tracing (app/tracing.py), optional: VEC_TRACING_ENABLED=true ---
+# This service is the downstream half of a two-service request. It already timed its own stages
+# (embed / retrieval / rerank) into Prometheus and a structured log, but those numbers could not be
+# read alongside the caller's — an `x-request-id` correlates log lines and carries no parent/child
+# relationship or durations. FastAPI instrumentation extracts the W3C `traceparent` ai-service now
+# injects, so these stages become children of the /ask span that caused them.
+#
+# The instrumentation packages version on their own line (0.65b0) rather than tracking the SDK
+# (1.44.0); mixing the two lines fails at import, not at resolve time. Kept byte-identical to
+# ai-service's pins so both services export to one collector with one wire format.
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-instrumentation-fastapi==0.65b0
+# httpx client instrumentation: this service calls the litellm gateway over httpx now, so it needs
+# to inject `traceparent` (join the caller's trace) the same way ai-service does.
+opentelemetry-instrumentation-httpx==0.65b0
+# Semantic-convention constants only (SpanAttributes, OpenInferenceSpanKindValues) — not an
+# instrumentor, this service has no LLM SDK of its own to patch. Labels the embed/retrieval/rerank
+# stage spans above with the OpenInference span kind (EMBEDDING/RETRIEVER/RERANKER) they actually
+# are, so Phoenix and Langfuse show what each stage IS instead of a kind-less generic span. Pinned
+# to the exact version ai-service already runs, for the same one-wire-format reason as the pins above.
+openinference-semantic-conventions==0.1.30
