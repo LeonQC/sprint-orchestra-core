@@ -1,0 +1,130 @@
+# LiteLLM Proxy: one OpenAI-compatible endpoint in front of multiple LLM backends.
+#
+# Why this exists on top of ai-service's own LLMClient abstraction (app/llm/): that one solves
+# "how does *this process* call whichever provider it's configured for" — a per-service concern.
+# A gateway solves a different, org-level problem: centralized rate limiting and spend budgets
+# *per caller* (not per service), model routing/fallback that can change without redeploying any
+# service, and one place to see total LLM spend across every service that talks to it — the actual
+# responsibility an AI Platform team owns, distinct from what any single service's client code does.
+model_list:
+  - model_name: openai-embedding-3-small
+    litellm_params:
+      # Every embedding (ingestion, query, ai-service's answer cache via /embed). MRL-trained, native
+      # 1536 dims, truncated client-side to 1024 to fit the vector(1024) column and its HNSW index.
+      model: openai/text-embedding-3-small
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: claude-vlm
+    litellm_params:
+      # vectorization-service's VLM fallback for images and PDF pages that OCR/Docling could not read
+      # (VEC_VLM_OPENAI_MODEL). Its own route so VLM spend shows up separately in the spend logs.
+      # Not gpt-5.6-luna: it truncates dense scanned pages, and the VLM's job is a complete
+      # transcription.
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: gemini-vlm
+    litellm_params:
+      # Same job as claude-vlm, on Gemini; the default VLM route (VEC_VLM_OPENAI_MODEL=gemini-vlm).
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: claude-context
+    litellm_params:
+      # vectorization-service's contextual-retrieval generator (VEC_CONTEXTUAL_OPENAI_MODEL): one
+      # situating sentence per chunk of a long attachment section, before embedding. Haiku because it
+      # runs once per chunk at ingest time, and it is the model Anthropic's contextual-retrieval write-up
+      # uses. Its own route so ingestion-time spend shows up separately. Contextual retrieval ships
+      # disabled (VEC_CONTEXTUAL_RETRIEVAL_ENABLED=false).
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  - model_name: claude-production
+    litellm_params:
+      # The alternate answer model: the fallback for openai-production, or the primary with
+      # AI_AGENT_MODEL=claude-production. Priced in app/llm/pricing.py (via _GATEWAY_ALIASES).
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # Judge for the eval harnesses. Anthropic, not OpenAI, because the system under test answers with
+  # gpt-5.6-luna and a same-family judge risks self-preference bias. The eval client speaks OpenAI's
+  # /chat/completions and litellm translates to Anthropic's /v1/messages. `litellm_settings.drop_params`
+  # below is load-bearing here: judge.py sends `reasoning_effort`, which Anthropic's API rejects.
+  - model_name: claude-judge
+    litellm_params:
+      model: anthropic/claude-sonnet-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+  # The RAGAS judge. Deliberately no static `thinking`/`thinking_level` override: judge.py always
+  # sends `reasoning_effort`, litellm turns that into its own thinking config, and the two collide
+  # ("Cannot specify both `thinking` and `thinking_level`"), a 400 on every call. The caller's
+  # `reasoning_effort="none"` already keeps thinking spend at zero.
+  - model_name: gemini-judge
+    litellm_params:
+      model: gemini/gemini-3.5-flash-lite
+      api_key: os.environ/GEMINI_API_KEY
+
+  - model_name: openai-production
+    litellm_params:
+      # The answer model: ai-service's agent, router and every structured-output feature
+      # (AI_AGENT_MODEL=openai-production). Pinned to `gpt-5.6-luna`, not a generic `gpt-5`.
+      # OPENAI_API_KEY comes from the root ./.env, the only place the real OpenAI key lives.
+      model: openai/gpt-5.6-luna
+      api_key: os.environ/OPENAI_API_KEY
+
+router_settings:
+  # Provider failover for the answer model only. If OpenAI errors (5xx, timeout, 429, outage) after
+  # `num_retries`, the same request goes to claude-production, which handles the agent's Responses-API
+  # tool calls. `allowed_fails`/`cooldown_time` are set, but cooldown only rotates between
+  # deployments of the same route, and LiteLLM skips it for single-deployment routes like all of
+  # these; fail-fast is ai-service's circuit breaker (app/llm/circuit_breaker.py). See README "Provider
+  # fallback". Retries live here only: ai-service's clients use max_retries=0.
+  #
+  # Deliberately NOT on the other routes: an embedding fallback to a different model would put query
+  # vectors in a different space from the index (no error, just wrong retrieval), so search degrades
+  # to BM25; the VLM's only alternative truncates dense pages, so ingestion keeps the OCR text and
+  # re-runs the VLM later; judges must stay fixed for scores to be comparable.
+  num_retries: 2
+  timeout: 120
+  allowed_fails: 3
+  cooldown_time: 30
+  fallbacks:
+    - openai-production: ["claude-production"]
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+
+litellm_settings:
+  drop_params: true  # tolerate a caller passing a param one backend doesn't support, instead of 400ing
+
+  # Emit an OpenInference/OTLP span for every LLM call the proxy makes, to Arize Phoenix — the same
+  # trace UI ai-service already sends its own SDK-level spans to (ai-service/app/tracing.py,
+  # observability/). Why do it here too, when the app is already instrumented: the app-side
+  # instrumentors only see calls that go through *this project's* Python SDK code. The proxy sees
+  # every caller regardless of language or codebase, tags each span with the virtual key / team that
+  # made it, and records the model actually chosen after routing/fallback — the caller-attributed,
+  # gateway's-eye view an AI Platform owns, which per-service instrumentation structurally cannot
+  # give. Spans export via a BatchSpanProcessor (off the request path); if Phoenix is down the
+  # exporter logs and drops, it never fails a completion. Endpoint + project name are set on the
+  # `litellm` service in docker-compose.yml (PHOENIX_COLLECTOR_ENDPOINT / PHOENIX_PROJECT_NAME).
+  callbacks: ["arize_phoenix"]
+
+  # Exact-match response cache, keyed on the whole request (model, instructions, input, tools, ...).
+  # The input already holds the retrieved evidence, so a changed index means a different key; nothing
+  # here has to know when data changed. Opt-in per request (`cache: {"use-cache": true}`), because
+  # most callers must not get a replay: Plan Epic's "regenerate", eval runs measuring variance.
+  # Only Ask AI's agent opts in (ai-service AI_LLM_RESPONSE_CACHE_ENABLED). The end user travels in
+  # the x-litellm-end-user-id header, not the body's `user`, which is part of the key and would make
+  # every entry per-person.
+  cache: true
+  cache_params:
+    type: redis
+    host: redis
+    port: 6379
+    namespace: litellm.response_cache
+    mode: default_off
+    supported_call_types: ["aresponses", "responses"]
+    # Bounds memory and how long a reply outlives a model swap behind the same alias; staleness of the
+    # data itself is already handled by the key.
+    ttl: 3600
