@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     restart: unless-stopped
-    container_name: poc-zookeeper
+    container_name: orchestra-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
     ports:
@@ -12,7 +10,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
-    container_name: poc-kafka
+    container_name: orchestra-kafka
     # Kafka can fatally exit on restart races (stale ZK broker registration) — always come back.
     restart: unless-stopped
     depends_on:
@@ -30,7 +28,7 @@ services:
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
-    container_name: poc-kafka-ui
+    container_name: orchestra-kafka-ui
     depends_on:
       - kafka
     ports:
@@ -40,8 +38,10 @@ services:
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
   postgres:
-    image: postgres:15
-    container_name: poc-postgres
+    image: sprint-orchestra/postgres:15-pgvector
+    build:
+      context: ./docker/postgres
+    container_name: orchestra-postgres
     environment:
       POSTGRES_DB: pocdb
       POSTGRES_USER: poc
@@ -50,16 +50,77 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./vectorization-service/schema:/opt/rag-schema:ro
+      - ./docker/postgres/010_init_rag.sql:/docker-entrypoint-initdb.d/010_init_rag.sql:ro
 
+  # OpenSearch owns ALL lexical retrieval in this system — both the user-facing global search
+  # (jira-backend's search bar) and the keyword-matching half of the RAG hybrid retriever
+  # (vectorization-service). Postgres keeps no full-text index at all any more: `postgres` is the
+  # relational source of truth, its rag schema holds chunks/vectors/ingestion bookkeeping, and OpenSearch is a derived
+  # read model rebuilt from either at will (see the /search/reindex endpoints).
+  #
+  # Two indices, deliberately not one — they answer different questions at different granularities:
+  #   orchestra-issues / orchestra-comments : 1 doc per issue / per comment. Feeds the search bar.
+  #       Written synchronously by jira-backend on commit, so a newly created issue is findable
+  #       immediately rather than after the async embedding pipeline catches up.
+  #   orchestra-chunks                      : 1 doc per chunk (issue text, comment, attachment page).
+  #       Feeds RAG's keyword-matching half, where the unit of retrieval has to be a chunk, not a
+  #       whole issue.
+  #
+  # OpenSearch rather than Elasticsearch because the deployment target is Amazon OpenSearch Service,
+  # the first-party AWS managed offering (IAM auth, CloudWatch metrics, VPC access with no
+  # marketplace subscription). Nothing in either service's query code depends on the choice:
+  # OpenSearch forked from Elasticsearch 7.10 and every query, mapping and analyzer used here
+  # predates the fork. Only the client libraries had to change, because the Elasticsearch clients
+  # verify a vendor response header and refuse to talk to anything that is not Elasticsearch.
+  #
+  # Single node with security disabled: this is a local/demo deployment, not a cluster.
+  # `DISABLE_SECURITY_PLUGIN=true` is what lets every client talk plain HTTP with no credentials; do
+  # not carry that setting into a real deployment. On Amazon OpenSearch Service the equivalent knobs
+  # are fine-grained access control plus a VPC/resource policy, neither of which has a local analogue
+  # worth emulating here.
+  opensearch:
+    image: opensearchproject/opensearch:2.19.6
+    container_name: orchestra-opensearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      # Bundled with the distribution and unused here: they add heap pressure and a slower boot on a
+      # dev laptop for features nothing in this project queries.
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      # OpenSearch defaults to half of container RAM; pin it so it does not balloon on a dev laptop
+      # that is already running PostgreSQL, Kafka, Redis and MinIO.
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+      # A dev laptop routinely sits above the default 85% disk watermark, at which point every index
+      # flips to read-only and indexing starts failing with an opaque `cluster_block_exception`.
+      # Turning the watermark off is right for a single-node dev box and wrong for a cluster.
+      cluster.routing.allocation.disk.threshold_enabled: "false"
+    ports:
+      - "9200:9200"
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health | grep -qE '\"status\":\"(green|yellow)\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  # redis-stack-server (not plain redis:7): adds the RediSearch module, which ai-service's semantic
+  # cache uses for native vector KNN search over cached-question embeddings (see
+  # ai-service/app/cache/semantic_cache.py) instead of pulling every candidate into Python and
+  # scanning — a real fix for the O(n) linear-scan limitation that module documented, not just a
+  # relabeling. Wire-compatible superset of plain Redis, so nothing else that talks to this container
+  # (e.g. Redis used for other future caching) needs to change.
   redis:
-    image: redis:7
-    container_name: poc-redis
+    image: redis/redis-stack-server:7.4.0-v3
+    container_name: orchestra-redis
     ports:
       - "6379:6379"
 
   minio:
     image: minio/minio:latest
-    container_name: poc-minio
+    container_name: orchestra-minio
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -70,6 +131,48 @@ services:
     volumes:
       - minio-data:/data
 
+  # The LLM gateway: one OpenAI-compatible endpoint every service's LLM/embedding call egresses
+  # through — centralized provider keys, per-caller spend budgets + rate limits, model routing/
+  # fallback, and gateway-side trace/token export. See litellm-gateway/config.yaml and
+  # litellm-gateway/README.md. In the critical path now (ai-service and vectorization-service point
+  # AI_OPENAI_BASE_URL / VEC_*_BASE_URL at :4000), so it starts with a plain `docker compose up` —
+  # NOT behind a profile. One-time DB bootstrap and per-service key provisioning are handled by
+  # scripts/dev_up.sh (or run scripts/litellm_provision_keys.sh by hand).
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: orchestra-litellm
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: postgresql://poc:poc123@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-sk-litellm-local-master-key}
+      # Real provider keys live HERE, in the gateway — not sprayed across each service's .env. Both
+      # read from the gitignored root ./.env (see litellm-gateway/README.md "Run it").
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      RUNPOD_VLLM_URL: ${RUNPOD_VLLM_URL:-}
+      RUNPOD_API_KEY_VLLM: ${RUNPOD_API_KEY_VLLM:-}
+      # Arize Phoenix trace export (config.yaml -> litellm_settings.callbacks: ["arize_phoenix"]).
+      # gRPC OTLP to the orchestra-phoenix container from observability/docker-compose.observability.yml,
+      # reached over the host since that stack is a separate compose project (it publishes :4317).
+      # If Phoenix isn't running the BatchSpanProcessor just logs export failures — completions are
+      # unaffected. PHOENIX_PROJECT_NAME is the field LiteLLM's arize_phoenix callback reads to pick
+      # the Phoenix project (NOT OTEL_RESOURCE_ATTRIBUTES — the proxy path ignores that); without it
+      # every proxy span lands in Phoenix's "default" project mixed with everything else. Per-team
+      # routing is still possible at runtime via a key's `phoenix_project_name` metadata.
+      PHOENIX_COLLECTOR_ENDPOINT: ${PHOENIX_COLLECTOR_ENDPOINT:-http://host.docker.internal:4317}
+      PHOENIX_PROJECT_NAME: ${PHOENIX_PROJECT_NAME:-litellm-gateway}
+      OTEL_SERVICE_NAME: litellm-gateway
+    volumes:
+      - ./litellm-gateway/config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    depends_on:
+      - postgres
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # so the container can reach Phoenix (:4317) on the host (macOS/Windows Docker Desktop already resolves this; Linux needs this line)
+
 volumes:
   postgres-data:
   minio-data:
+  opensearch-data:
