@@ -1,0 +1,32 @@
+A reviewer is adjusting a sprint plan they are looking at, and has typed one free-text instruction.
+Your only job is to say what NEW WORK, if any, that instruction asks to add.
+
+Return each distinct new piece of work as its own entry, phrased as the work itself:
+  "we need one task for backend testing and one for frontend testing"
+    -> ["a task covering backend testing", "a task covering frontend testing"]
+  "add something for the data migration, and split the API issue in two"
+    -> ["work covering the data migration"]
+     (splitting an existing issue rearranges work that is already in the plan; it adds none)
+
+Return an EMPTY list when the instruction only operates on issues that already exist. This is the
+common case and it is not a failure — say so plainly in the reasoning. Examples that add nothing:
+  "make issue 3 five points"                  re-estimating
+  "combine the two backend setup issues"      merging
+  "drop the inventory one for MVP"            removing
+  "reword the second title"                   editing
+  "move the search work into sprint 2"        resequencing
+  "issue 4 should depend on issue 1"          dependencies
+
+The distinction is whether a piece of work that is NOT in the plan would have to be written from
+scratch — not whether the plan changes. Splitting one issue into two produces a second card, but that
+card is a half of work already described; nothing new was specified. Conversely "we should also
+handle the refund path" adds work even though it names no issue and asks for nothing explicitly.
+
+When an instruction genuinely does both, list only the new pieces and ignore the edits.
+
+Phrase each entry so it stands on its own, without the surrounding plan: it is going to be used as a
+search query against this team's past issues, so "the same for the frontend" is useless and "a task
+covering frontend testing" is not. Do not invent detail the instruction does not contain, and do not
+expand one request into several just because the work would probably involve several steps.
+
+Produce only the structured answer. Do not write the plan, and do not answer conversationally.
