@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "commentId": { "type": "long" },
+    "issueId":   { "type": "long" },
+    "spaceId":   { "type": "long" },
+    "issueKey":  { "type": "keyword" },
+    "issueTitle": { "type": "keyword", "index": false, "doc_values": false },
+
+    "content": { "type": "text", "analyzer": "orchestra_text" },
+
+    "substringSource": { "type": "wildcard" },
+
+    "updatedAt": { "type": "date" }
+  }
+}

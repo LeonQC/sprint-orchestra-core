@@ -1,0 +1,23 @@
+{
+  "properties": {
+    "issueId":   { "type": "long" },
+    "spaceId":   { "type": "long" },
+
+    "issueKey": {
+      "type": "keyword",
+      "normalizer": "orchestra_lowercase",
+      "fields": {
+        "text": { "type": "text", "analyzer": "orchestra_identifier" }
+      }
+    },
+
+    "title":           { "type": "text", "analyzer": "orchestra_text" },
+    "description":     { "type": "text", "analyzer": "orchestra_text" },
+    "labelNames":      { "type": "text", "analyzer": "orchestra_text" },
+    "attachmentNames": { "type": "text", "analyzer": "orchestra_identifier" },
+
+    "substringSource": { "type": "wildcard" },
+
+    "updatedAt": { "type": "date" }
+  }
+}
