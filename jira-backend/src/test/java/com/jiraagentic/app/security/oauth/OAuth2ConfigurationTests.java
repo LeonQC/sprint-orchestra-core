@@ -30,6 +30,6 @@ class OAuth2ConfigurationTests {
         assertThat(loginSuccessHandler).isNotNull();
         assertThat(github).isNotNull();
         assertThat(github.getClientId()).isEqualTo("test-client-id");
-        assertThat(github.getRedirectUri()).isEqualTo("http://localhost:8080/login/oauth2/code/github");
+        assertThat(github.getRedirectUri()).isEqualTo("http://localhost:5173/login/oauth2/code/github");
     }
 }
