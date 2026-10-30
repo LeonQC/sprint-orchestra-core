@@ -43,6 +43,7 @@ out/
 .env
 .env.*
 !.env.example
+.local-backups/
 **/application-local.yml
 **/application-local.properties
 docker-compose.override.yml
@@ -69,3 +70,13 @@ storage/
 Thumbs.db
 *.swp
 *~
+
+# Seed data: generator output (recreated by `m3_seed.py generate`)
+seed-data/atlascart/generated/
+.mcp.json
+
+# Alertmanager Slack webhook (secret)
+observability/alertmanager/slack_webhook_url
+
+# Eval output, rewritten on every run
+ai-service/eval/results/

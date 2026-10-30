@@ -1,0 +1,18 @@
+# Context for the Java images (built from the repo root). The Python services build from their own
+# directories and aren't affected by this file.
+**/.venv
+**/node_modules
+**/__pycache__
+**/build
+**/.gradle
+.git
+.idea
+.vscode
+.env
+ai-service
+vectorization-service
+seed-data
+observability
+litellm-gateway
+docs
+scripts
