@@ -1,0 +1,9 @@
+# Build from observability/: docker build -f aws/Dockerfile.alertmanager .
+FROM prom/alertmanager:v0.27.0
+USER root
+COPY alertmanager/alertmanager.yml /etc/alertmanager/alertmanager.yml
+COPY aws/alertmanager-entrypoint.sh /bin/alertmanager-entrypoint.sh
+RUN chmod 755 /bin/alertmanager-entrypoint.sh && chown nobody /etc/alertmanager
+USER nobody
+ENTRYPOINT ["/bin/alertmanager-entrypoint.sh"]
+CMD []

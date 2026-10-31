@@ -1,0 +1,230 @@
+# Service-level objectives, as rules Prometheus evaluates rather than numbers in a README.
+#
+# WHY THIS FILE EXISTS. Before it, this repo could draw a P95 latency graph but could not answer
+# "is that number acceptable?" — the graph was a fact with no standard attached, so "P95 latency
+# optimization" had no definition of done and no way to regress visibly. A threshold that lives only
+# in a person's head is not an objective; one Prometheus evaluates every 15 seconds is.
+#
+# HOW THE TARGETS WERE CHOSEN. Each is anchored to a measurement taken with a Locust load test
+# against the local stack, set with headroom above the observed value so the alert fires on a real
+# regression rather than on normal jitter — a target set at the current number alerts on noise
+# forever and gets muted, which is worse than having none.
+#
+# The /ask objective is written for a hosted LLM endpoint. A single self-hosted model server that
+# serialises concurrent requests measured ~23s P95, and the target was deliberately not relaxed to fit
+# it; see `AskLatencyObjectiveBreached`'s annotation.
+groups:
+  - name: slo-latency
+    interval: 15s
+    rules:
+      # --- Recording rules -------------------------------------------------------------------
+      # The same expression appears in an alert, on the dashboard, and in the A/B report. Recording
+      # it once means all three read the identical series and cannot silently diverge over a changed
+      # rate() window.
+      - record: slo:search_p95_seconds
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="vectorization-service",path="/search"}[5m])) by (le))
+
+      - record: slo:ask_p95_seconds
+        expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job="ai-service",path="/ask"}[5m])) by (le))
+
+      # Traffic, and cache activity, as separate series — because the failure mode that actually
+      # happened produces NO cache series at all, not a bad ratio. `prometheus_client` only exposes a
+      # labelled child after its first .inc(), so a cache that is never consulted leaves
+      # `agent_cache_hits_total` entirely absent from the TSDB. Every expression built on it then
+      # evaluates to an empty vector, and an alert written as "ratio < 5%" silently never fires — on
+      # precisely the incident it was written for. `or vector(0)` turns that absence into the number
+      # it means.
+      - record: slo:ask_requests_per_second
+        expr: sum(rate(http_requests_total{job="ai-service",path=~"/ask.*"}[10m])) or vector(0)
+
+      - record: slo:cache_lookups_per_second
+        expr: sum(rate(agent_cache_hits_total[10m])) or vector(0)
+
+      # Left deliberately EMPTY when there are no lookups, rather than defaulted to 0: an idle
+      # service has no hit rate, and drawing it as 0% would report a healthy cache as a failing one
+      # every night. "No lookups at all" is the separate, louder signal above.
+      - record: slo:cache_hit_ratio
+        expr: sum(rate(agent_cache_hits_total{hit_type="hit"}[10m])) / clamp_min(sum(rate(agent_cache_hits_total[10m])), 1e-9)
+
+      # jira-backend (Micrometer) names the same counter differently; `or` adds it as its own job.
+      - record: slo:error_ratio
+        expr: >-
+          sum(rate(http_requests_total{status=~"5.."}[5m])) by (job) / clamp_min(sum(rate(http_requests_total[5m])) by (job), 1e-9)
+          or
+          sum(rate(http_server_requests_seconds_count{job="jira-backend",status=~"5.."}[5m])) by (job) / clamp_min(sum(rate(http_server_requests_seconds_count{job="jira-backend"}[5m])) by (job), 1e-9)
+
+      # --- Alerting rules --------------------------------------------------------------------
+      - alert: SearchLatencyObjectiveBreached
+        # Objective: P95 < 1s. Measured at 820ms under 50 concurrent users with reranking on, so this
+        # is the measured number plus ~20% headroom.
+        expr: slo:search_p95_seconds > 1
+        for: 5m
+        labels:
+          severity: warning
+          slo: search-latency
+        annotations:
+          summary: "vectorization-service /search P95 is {{ $value | humanizeDuration }} (objective: < 1s)"
+          description: >-
+            Check the stage breakdown before touching anything: the embedding call, not Postgres, was
+            the bottleneck the one time this was actually measured (pgvector retrieval P95 was 5ms).
+            Panel "vectorization-service: /search stage latency (P95)".
+
+      - alert: AskLatencyObjectiveBreached
+        # Objective: P95 < 8s against a hosted LLM endpoint. Deliberately NOT set to the ~23s a
+        # single self-hosted model server produced: an SLO relaxed until the setup passes measures nothing.
+        expr: slo:ask_p95_seconds > 8
+        for: 10m
+        labels:
+          severity: warning
+          slo: ask-latency
+        annotations:
+          summary: "ai-service /ask P95 is {{ $value | humanizeDuration }} (objective: < 8s)"
+          description: >-
+            Expected to fire continuously when ai-service is pointed at a local single-process LLM
+            server, which serialises concurrent requests — that is a real breach of the objective,
+            not a false positive. Against a hosted endpoint, check the answer-cache hit rate and the
+            corrective-retrieval round count before blaming the model.
+
+      - alert: ErrorRateObjectiveBreached
+        expr: slo:error_ratio > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "{{ $labels.job }} is returning {{ $value | humanizePercentage }} 5xx (objective: < 1%)"
+
+      - alert: ServiceDown
+        # Every other alert needs the service to report numbers; this one fires when it can't.
+        expr: up{job=~"jira-backend|ai-service|vectorization-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "{{ $labels.job }} has not answered Prometheus for 2 minutes"
+
+  - name: slo-cache
+    interval: 15s
+    rules:
+      - alert: AnswerCacheNeverConsulted
+        # THE alert this repo needed and did not have, written against the real incident rather than
+        # against an imagined one. `is_answer_cache_safe` was structurally incapable of returning
+        # True, so /ask never once looked in the cache. Note what that does and does not look like:
+        # the hit rate was not 0%, it was *absent* — the counter was never incremented, so the series
+        # did not exist, so anything phrased as "hit rate is too low" evaluated to nothing and would
+        # have stayed silent for the entire life of the bug. This compares live /ask traffic against
+        # cache activity, and both sides exist independently of whether the cache works.
+        expr: slo:ask_requests_per_second > 0 and slo:cache_lookups_per_second == 0
+        for: 30m
+        labels:
+          severity: warning
+          slo: cache-effectiveness
+        annotations:
+          summary: "/ask is serving traffic but has not consulted the answer cache in 30m"
+          description: >-
+            The cache is not being *reached*, which is a different failure from not being useful.
+            Check GET /healthz/cache first: it reports in one call whether the cache is disabled
+            outright and whether the freshness token is obtainable. If both look right, the read gate
+            in app/api/routes.py is declining every request.
+
+      - alert: AnswerCacheNeverHits
+        # The weaker sibling of the above: the cache IS being consulted and still never helps.
+        expr: slo:cache_lookups_per_second > 0 and slo:cache_hit_ratio < 0.05
+        for: 30m
+        labels:
+          severity: warning
+          slo: cache-effectiveness
+        annotations:
+          summary: "Answer cache hit rate is {{ $value | humanizePercentage }} over 30m of real traffic"
+          description: >-
+            Read agent_cache_writes_total before Redis. Nothing is being *stored* if it is dominated
+            by skipped_route (every question is routing to a structured tool) or skipped_abstained
+            (the corpus does not cover what people ask). If writes are healthy and reads still miss,
+            the problem is on the read side — most likely the freshness token changing on every
+            request because ingestion is continuously rewriting rows.
+
+      - alert: AnswerCacheFreshnessCheckUnavailable
+        # Distinct from a low hit rate on purpose. This is the *check* failing, which makes every
+        # request bypass the cache and look identical to a useless cache from the hit rate alone —
+        # sending the on-call to inspect Redis, which is the wrong box entirely.
+        expr: rate(agent_cache_watermark_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          slo: cache-effectiveness
+        annotations:
+          summary: "Index-watermark lookups are failing; the answer cache is being bypassed"
+          description: >-
+            ai-service cannot reach vectorization-service's GET /index/watermark, so it cannot prove a
+            cached answer is still fresh and is correctly refusing to reuse one. Requests are correct
+            and slower. Check vectorization-service and its Postgres connection.
+
+  - name: slo-cache-infrastructure
+    interval: 15s
+    rules:
+      - alert: RedisEvictingCacheEntries
+        # The FIFO/max_entries bookkeeping in app/cache/semantic_cache.py bounds entries per space;
+        # this catches the other eviction, the one nothing in the application can see: Redis hitting
+        # maxmemory and dropping keys underneath it. The symptom is a hit rate that decays as the
+        # corpus grows, with no code change to blame.
+        expr: rate(redis_evicted_keys_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          slo: cache-effectiveness
+        annotations:
+          summary: "Redis is evicting keys under memory pressure ({{ $value }}/s)"
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels:
+          severity: warning
+          slo: cache-effectiveness
+        annotations:
+          summary: "Redis is unreachable; /ask is running entirely uncached"
+
+  - name: llm-provider-failover
+    interval: 15s
+    rules:
+      - alert: LLMFallbackActive
+        # The gateway is answering with claude-production because openai-production keeps failing
+        # (litellm-gateway/config.yaml `router_settings.fallbacks`). Users still get answers, which is
+        # the point of the fallback and also why this needs an alert: nothing else breaks. Each
+        # fallback call is priced at Claude's rate (~15x luna per /ask), so a sustained fallback is a
+        # cost change and an OpenAI incident at the same time.
+        expr: sum(rate(llm_fallbacks_total[10m])) by (requested, served) > 0
+        for: 5m
+        labels:
+          severity: warning
+          slo: llm-availability
+        annotations:
+          summary: "{{ $labels.requested }} is being answered by {{ $labels.served }} ({{ $value | printf \"%.2f\" }} calls/s)"
+          description: "Check the primary provider's status and the gateway logs. Cost per call is higher while this fires."
+
+      - alert: AskAnswerModelsUnavailable
+        # Every answer model failed, fallback included, and Ask AI is returning retrieved sources with
+        # no generated answer (app/api/routes.py `_retrieval_only_response`). Users get somewhere to
+        # start, so nothing errors; this alert is how anyone finds out.
+        expr: sum(rate(agent_ask_degraded_total{reason="answer_model_unavailable"}[5m])) > 0
+        for: 2m
+        labels:
+          severity: critical
+          slo: llm-availability
+        annotations:
+          summary: "Ask AI is serving sources only: no answer model is reachable"
+          description: "Both openai-production and its claude-production fallback are failing. Check the gateway logs and both providers' status pages."
+
+      - alert: SearchDegradedToBm25
+        # Query embeddings are failing and /search is answering hybrid requests with BM25 only
+        # (vectorization-service app/api/routes.py). Results still come back, with lower recall on
+        # paraphrased questions; ingestion is paused on the same outage (Kafka lag grows).
+        expr: sum(rate(search_degraded_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          slo: retrieval-quality
+        annotations:
+          summary: "Search is BM25-only: the embedding model is failing"
+          description: "Check the openai-embedding-3-small route on the LiteLLM gateway. Ingestion resumes by itself once embeddings work again."
