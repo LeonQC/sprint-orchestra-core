@@ -1,0 +1,26 @@
+{
+  "baseline": "lowest of three clean RAGAS runs, minus 0.03",
+  "ragas": {
+    "min": {
+      "faithfulness": 0.91,
+      "answer_relevancy": 0.72,
+      "context_precision": 0.69,
+      "context_recall": 0.82
+    },
+    "floors_note": "Run-to-run variance on unchanged code is up to 0.06 in context_precision, concentrated in the multi-source questions, so floors are set from three runs, not one.",
+    "abstention_refused_min": 2,
+    "abstention_note": "2 of 3: one out-of-scope question sometimes asks back instead of refusing."
+  },
+  "sprint_recovery_scenarios": {
+    "diagnosis_min": 11,
+    "plan_min": 6,
+    "note": "Graded by keyword, so a correct answer in other words can miss once."
+  },
+  "retrieval": {
+    "min": {
+      "hit@5": 0.93,
+      "recall@10": 0.95
+    },
+    "note": "eval/retrieval_hit.py: labelled semantic questions sent straight to /search (hybrid + rerank, no query rewriting). Deterministic, so the slack allows one more missed question, not run-to-run noise."
+  }
+}
