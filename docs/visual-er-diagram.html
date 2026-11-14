@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Visual ER diagram — Jira Agentic AI (core schema)</title>
+  <title>Visual ER diagram — Sprint Orchestra Core</title>
   <style>
     :root {
       color-scheme: dark light;
@@ -64,7 +64,7 @@
     .mermaid {
       display: flex;
       justify-content: flex-start;
-      min-width: min(100%, 1400px);
+      min-width: min(100%, 1600px);
     }
     .err {
       color: #f85149;
@@ -77,23 +77,32 @@
   <header>
     <h1>Entity–relationship diagram (visual)</h1>
     <p>
-      Complete view of the current Flyway <code>V1</code>–<code>V17</code> schema: 15 application tables, 119 columns,
-      and 26 foreign-key relationships. Each entity includes every persisted column; nullable and default values are
-      noted inline. Nullable relationships include
+      All 19 tables (168 columns) in <code>pocdb.public</code>, as created by Flyway <code>V1</code>–<code>V36</code>.
+      <code>idempotency_keys</code> has no foreign keys and stands alone. Nullable and default values are noted
+      inline. Nullable relationships include
       <code>spaces.owner_id</code>, <code>issues.sprint_id</code> / <code>parent_id</code> / <code>assignee_id</code> /
-      <code>reporter_id</code>, <code>issue_history.actor_id</code>, <code>issue_attachments.uploader_id</code>,
-      <code>issue_code_links.creator_id</code>. Junction tables implement logical many-to-many between users, spaces,
-      and groups. See <code>DATABASE_SCHEMA_CORE_FINAL_v1.md</code> for migration history and index details. Mermaid
-      loads from jsDelivr (network once unless cached).
+      <code>reporter_id</code>, <code>labels.deleted_at</code>, <code>issue_history.actor_id</code>,
+      <code>issue_attachments.uploader_id</code>, <code>issue_code_links.creator_id</code>,
+      <code>comments.parent_id</code> / <code>reply_to_id</code>, <code>ai_feedback.reviewer_id</code>, and sprint metric columns on
+      <code>sprints</code>. Junction tables implement logical many-to-many between users, spaces, groups, issues, and
+      labels. See <code>DATABASE_SCHEMA_CORE.md</code> for column descriptions and index details. Mermaid loads from
+      jsDelivr (network once unless cached).
     </p>
     <p class="schema-notes">
       <strong>Unique keys:</strong>
-      <code>users(username)</code>, <code>users(email)</code>, <code>issues(issue_key)</code>, and
-      <code>issue_attachments(storage_filename)</code>. Partial unique indexes apply to non-null
+      <code>users(username)</code>, <code>users(email)</code>, <code>issues(issue_key)</code>,
+      <code>labels(space_id, normalized_name)</code>, <code>sprint_issue_history(sprint_id, issue_id)</code>, and
+      <code>issue_attachments(storage_filename)</code>, <code>ai_feedback(answer_id, reporter_id)</code>. Partial unique indexes apply to non-null
       <code>users.google_sub</code>, non-null <code>users.github_id</code>, and active <code>spaces.space_key</code>
       (<code>deleted_at IS NULL</code>). Composite unique keys are shown in entity comments for memberships,
       space/group and repository links, issue links, and issue code links.
     </p>
+    <p class="schema-notes"><strong>Storage:</strong> The business entities below
+      are in <code>pocdb.public</code>. The same PostgreSQL instance also holds
+      <code>rag.chunks</code>, <code>rag.chunk_parents</code>, <code>rag.vlm_result_cache</code>,
+      <code>rag.ingestion_status</code> and <code>rag.vlm_retry_queue</code>, plus ai-service's
+      <code>planning_workflows</code> schema. pgvector is an extension; there is no second vector container.
+      See <a href="AI_ARCHITECTURE.md">AI architecture</a>.</p>
   </header>
   <div class="wrap">
     <div class="mermaid">
@@ -166,9 +175,31 @@ erDiagram
     date start_date "nullable"
     date end_date "nullable"
     varchar(20) status
+    integer sprint_order "default 0"
+    integer initial_committed_points "nullable"
+    integer initial_completed_points "nullable"
+    integer final_scope_points "nullable"
+    integer completed_points "nullable"
+    integer initial_issue_count "nullable"
+    integer completed_issue_count "nullable"
+    integer final_issue_count "nullable"
+    integer unestimated_issue_count "nullable"
     timestamptz(6) created_at
     timestamptz(6) updated_at
-    integer sprint_order "default 0"
+  }
+  sprint_issue_history {
+    bigint id PK "identity"
+    bigint sprint_id FK "composite unique with issue_id"
+    bigint issue_id "composite unique with sprint_id"
+    varchar(30) issue_key
+    varchar(20) issue_type
+    boolean initial_scope
+    integer points_at_start "nullable"
+    integer points_at_end "nullable"
+    varchar(20) status_at_end "nullable"
+    varchar(20) outcome "nullable"
+    timestamptz(6) added_at
+    timestamptz(6) removed_at "nullable"
   }
   issues {
     bigint id PK "identity"
@@ -190,9 +221,17 @@ erDiagram
     timestamptz(6) created_at
     timestamptz(6) updated_at
   }
+  labels {
+    bigint id PK "identity"
+    bigint space_id FK "composite unique with normalized_name"
+    varchar(50) name
+    varchar(50) normalized_name "composite unique with space_id"
+    timestamptz(6) created_at
+    timestamptz(6) deleted_at "nullable"
+  }
   issue_labels {
-    bigint issue_id FK
-    varchar(50) label
+    bigint issue_id FK "PK with label_id"
+    bigint label_id FK "PK with issue_id"
   }
   comments {
     bigint id PK "identity"
@@ -201,6 +240,8 @@ erDiagram
     text content
     timestamptz(6) created_at
     timestamptz(6) updated_at
+    bigint parent_id FK "nullable; top-level comment of the thread"
+    bigint reply_to_id FK "nullable; on delete set null"
   }
   issue_history {
     bigint id PK "identity"
@@ -245,7 +286,32 @@ erDiagram
     varchar(40) state "nullable"
     varchar(120) author_login "nullable"
     timestamptz(6) created_at
-    timestamptz(6) last_activity_at "nullable"
+    timestamptz last_activity_at "nullable"
+  }
+  ai_feedback {
+    uuid id PK
+    uuid answer_id "composite unique with reporter_id"
+    bigint reporter_id FK "composite unique with answer_id"
+    varchar(8) rating "up or down"
+    varchar(32) reason "default empty"
+    text comment "default empty"
+    jsonb snapshot
+    varchar(16) status "new, reviewing, resolved, dismissed"
+    varchar(32) root_cause "default empty"
+    text review_note "default empty"
+    text expected_answer "default empty"
+    jsonb required_issue_keys "default []"
+    bigint reviewer_id FK "nullable"
+    integer revision "default 0"
+    timestamptz created_at "default now()"
+    timestamptz updated_at "default now()"
+  }
+  idempotency_keys {
+    varchar(255) idempotency_key PK
+    integer response_status
+    text response_body "nullable"
+    varchar(100) content_type "nullable"
+    timestamp created_at "default now()"
   }
 
   users |o--o{ spaces : "owner_id"
@@ -259,11 +325,14 @@ erDiagram
   spaces ||--o{ space_github_repos : "space_id"
   spaces ||--o{ sprints : "space_id"
   spaces ||--o{ issues : "space_id"
+  spaces ||--o{ labels : "space_id"
   sprints |o--o{ issues : "sprint_id"
+  sprints ||--o{ sprint_issue_history : "sprint_id"
   issues |o--o{ issues : "parent_id"
   users |o--o{ issues : "assignee_id"
   users |o--o{ issues : "reporter_id"
   issues ||--o{ issue_labels : "issue_id"
+  labels ||--o{ issue_labels : "label_id"
   issues ||--o{ comments : "issue_id"
   users ||--o{ comments : "author_id"
   issues ||--o{ issue_history : "issue_id"
@@ -274,6 +343,10 @@ erDiagram
   users |o--o{ issue_attachments : "uploader_id"
   issues ||--o{ issue_code_links : "issue_id"
   users |o--o{ issue_code_links : "creator_id"
+  comments |o--o{ comments : "parent_id"
+  comments |o--o{ comments : "reply_to_id"
+  users ||--o{ ai_feedback : "reporter_id"
+  users |o--o{ ai_feedback : "reviewer_id"
     </div>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>

@@ -1,461 +1,273 @@
-# Jira Agentic AI
+# Sprint Orchestra Core
 
-Full-stack **Jira-style** workspace demo: **Spring Boot 3** REST API plus a **React (Vite)** SPA that lives in a **separate repository** (`jira-agentic-ai-web`), with **PostgreSQL**, **Redis** cache, **Flyway** migrations, and gateway-side **JWT** validation (OAuth2 Resource Server) for protected APIs.
+Backend and AI platform for a Jira-style sprint workspace. The repository contains the Spring core
+API, an event-driven vectorization service, a corrective-RAG agent, durable LangGraph
+workflows, local infrastructure, an AI eval gate, load tests, and observability tooling. The React
+SPA lives in the sibling `sprint-orchestra-studio` repository.
 
----
+Not yet hardened for multi-tenant production; the open items are listed under
+[Security posture and known gaps](#security-posture-and-known-gaps).
 
-## Table of contents
+## What is implemented
 
-- [Features](#features)
-- [Tech stack](#tech-stack)
-- [Repository layout](#repository-layout)
-- [Core docs](#core-docs)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Local development](#local-development)
-- [Configuration](#configuration)
-- [Database & Flyway](#database--flyway)
-- [Authentication & authorization](#authentication--authorization)
-- [HTTP API overview](#http-api-overview)
-- [OpenAPI (Swagger)](#openapi-swagger)
-- [Frontend](#frontend)
-- [Build, test, quality](#build-test-quality)
-- [Production deployment checklist](#production-deployment-checklist)
-- [Security notes](#security-notes)
-- [Troubleshooting](#troubleshooting)
-- [Attachments, deletes & Kafka](#attachments-deletes--kafka)
-- [Target platform architecture](./docs/ARCHITECTURE.md)
+- Jira-like spaces, sprints, issues, comments, attachments, groups, GitHub links, and sprint history.
+- RS256 JWTs verified by each service itself (jira-backend publishes its public key at
+  `/.well-known/jwks.json`), with identity taken from validated claims rather than client headers.
+  Service-to-service calls use a separate internal token.
+- PostgreSQL/Flyway core schema, OpenSearch search, Redis Stack, MinIO/S3-compatible storage, and
+  Kafka content/attachment events.
+- Event-driven RAG ingestion: HTML/document extraction (Docling, OCR, VLM fallback), structure-aware
+  chunking with parent sections, embeddings in pgvector, OpenSearch BM25, RRF fusion, and
+  cross-encoder reranking.
+- Corrective RAG with citations, abstention, exact metadata/history tools, runtime verification,
+  Fast/Deep modes with a multi-agent path, Redis-backed answer caching, streaming, and cost/latency
+  metrics.
+- An eval gate: retrieval hit@k, RAGAS, Sprint Recovery scenarios and a prompt-injection probe.
+- Ask AI answer feedback with an owner-scoped review inbox, captured evidence and review revisions.
+- AI task drafting, epic planning, sprint health analysis, durable human-approved epic rollout, and
+  durable sprint-recovery workflows with Postgres checkpoints, retry, history, and time travel.
+- LiteLLM gateway as the single LLM/embedding egress for both Python services (per-service keys,
+  budgets, rate limits, model routing) and a Prometheus/Grafana/Phoenix overlay.
+- MCP server for external agents (Claude Code, Cursor): ask, ticket context, similar work and
+  sprint risk as tools, scoped server-side to the caller's spaces; stateless Streamable HTTP,
+  JWT-authenticated.
 
----
-
-## Features
-
-- **Spaces**, **members**, **groups** linked to spaces, **sprints**, **issues** (with backlog/board-style UI), **comments**
-- **Attachments** stored via configurable backend: local filesystem or S3-compatible storage (MinIO in local PoC); optional **Kafka** notification after each successful upload (see [Attachments, deletes & Kafka](#attachments-deletes--kafka))
-- **GitHub repo integration** + issue code links + metadata refresh flows
-- **JWT** issued via `POST /api/auth/token`; SPA stores token and sends `Authorization: Bearer …`
-- **Redis**-backed Spring Cache for user-by-id reads (TTL aligned with `application.yml`)
-- **Flyway** for versioned schema (`V1`..`V17`); JPA `ddl-auto: validate` in default config
-- **springdoc-openapi** + Swagger UI for API exploration
-
----
-
-## Tech stack
-
-| Layer | Technology |
-|--------|------------|
-| Backend | Java 17, Spring Boot 3.2, Spring Data JPA, Spring Security (JWT / optional OAuth2 login) |
-| Database | PostgreSQL 15 |
-| Migrations | Flyway 9.x |
-| Cache | Spring Cache → Redis (JSON values, TTL) |
-| Object storage | MinIO (local S3-compatible) / AWS S3-compatible API |
-| API docs | springdoc-openapi 2.x |
-| Frontend | React 19, TypeScript 5.x, Vite 7, React Router 7, `@hello-pangea/dnd` |
-| Dev infra | Docker Compose (Postgres + Redis + MinIO + optional Kafka / Kafka UI) |
-| Messaging (optional) | Apache Kafka via Spring Kafka; POC consumer module `tmp-kafka-consumer-poc` |
-
----
-
-## Repository layout
-
-```
-jira-agentic-ai/
-├── docker-compose.yml              # PostgreSQL + Redis + MinIO + Kafka (+ Kafka UI)
-├── build.gradle.kts                # aggregator (group/version + shared repos)
-├── settings.gradle.kts             # multi-module: jira-backend + gateway + tmp-kafka-consumer-poc
-├── gradlew / gradlew.bat
-├── README.md
-├── docs/                            # Architecture, API design, schema, and ER diagram
-│   ├── ARCHITECTURE.md
-│   ├── API_DESIGN_CORE_FINAL_v1.md
-│   ├── DATABASE_SCHEMA_CORE_FINAL_v1.md
-│   └── visual-er-diagram.html
-├── jira-backend/                   # Spring Boot REST API (main app)
-│   ├── build.gradle.kts
-│   └── src/
-│       ├── main/java/com/jiraagentic/app/   # root package (controllers, services, …)
-│       ├── main/resources/                  # application.yml, Flyway db/migration/
-│       └── test/java/
-├── gateway/                        # Spring Cloud Gateway (optional local edge)
-│   ├── build.gradle.kts
-│   └── src/main/java/com/jiraagentic/gateway/
-└── tmp-kafka-consumer-poc/         # Temporary POC: logs attachment-upload Kafka messages
-    ├── build.gradle.kts
-    └── src/main/java/com/jiraagentic/poc/kafka/
-```
-
-The **SPA** is not in this tree: clone or check out **`jira-agentic-ai-web`** (sibling repo / folder at repo root with `package.json`, `vite.config.ts`, `src/`, etc.).
-
----
-
-## Core docs
-
-- [Target architecture](./docs/ARCHITECTURE.md) (Kafka / vectorization / AI / observability)
-- [API design](./docs/API_DESIGN_CORE_FINAL_v1.md)
-- [Database schema](./docs/DATABASE_SCHEMA_CORE_FINAL_v1.md)
-- [Visual ER diagram](./docs/visual-er-diagram.html)
-
----
-
-## Architecture
-
-**Target platform view**（Gateway、合併後核心服務、Kafka、獨立 Vectorization / AI、可觀測性模型）見 **[`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md)**。
-
-下列圖表侧重 **目前 repo 已落地的** Spring monolith 與資料路徑。
+## Runtime architecture
 
 ```mermaid
 flowchart LR
-  subgraph client [Browser]
-    SPA[React SPA]
-  end
-  subgraph server [Spring Boot]
-    CTRL[Controllers]
-    SVC[Services]
-    JPA[JPA Repositories]
-  end
-  subgraph data [Data]
-    PG[(PostgreSQL)]
-    RD[(Redis)]
-    S3[(MinIO / S3)]
-  end
-  SPA -->|HTTPS JSON + JWT| CTRL
-  CTRL --> SVC
-  SVC --> JPA
-  SVC -->|@Cacheable users| RD
-  SVC -->|Attachments| S3
-  JPA --> PG
+  UI[React SPA] -->|JWT| EDGE[Vite dev proxy :5173 / AWS CloudFront + ALB]
+  EDGE -->|/api/**| CORE[jira-backend :8081]
+  EDGE -->|/api/ai/** prefix stripped| AI[ai-service :8200]
+  AI -.->|public key| CORE
+  CORE --> PG[(Core PostgreSQL :5432)]
+  CORE --> REDIS[(Redis Stack :6379)]
+  CORE --> S3[(MinIO / S3)]
+  CORE --> K[Kafka]
+  K --> VEC[vectorization-service :8100]
+  VEC -->|derived chunks + vectors in rag schema| PG
+  VEC -->|structured facts, internal API| CORE
+  VEC --> S3
+  AI -->|retrieval and embedding| VEC
+  AI -->|membership and Jira writes| CORE
+  AI -->|LangGraph checkpoints| PG
+  AI -->|LLM calls| LLM[LiteLLM gateway :4000]
+  VEC -->|embeddings, VLM, contextualization| LLM
+  LLM --> OAI[OpenAI / Anthropic]
 ```
 
-**Terminology:** Use **vectorization** for the step where text is turned into embedding vectors (search / RAG). Earlier informal notes sometimes used a misheard name for this step; standardize on **vectorization** in all diagrams and prose. A repository-wide search shows no legacy misspelling in code or docs—only use the correct term going forward.
+The browser talks to one origin. Locally that is the Vite dev server, which proxies `/api/ai/*` to
+ai-service and the rest of `/api` to jira-backend; on AWS, CloudFront and an Application Load Balancer do the same routing. There is no gateway service doing authentication: every
+request to jira-backend or ai-service needs either a user JWT, which the service verifies itself, or
+the internal service token (`X-Internal-Token`), used by ai-service, eval scripts, and ops scripts.
+Ports `8081`, `8100`, and `8200` should still stay off the public internet.
 
-**Retrieval / embedding view (naming — optional RAG layer):** Same product boundary as above, with an explicit **vectorization** step (this repo’s shipped stack is still the Spring + Postgres + Redis + S3 path in the first diagram; a vector index is shown here only as the usual companion when you add semantic retrieval).
+PostgreSQL is shared: business records stay in `pocdb.public`; derived search data lives in
+`pocdb.rag`. There is no second database container or port 5433. Exact issue/sprint/history queries
+read the source through jira-backend, while semantic search uses `rag.chunks`.
 
-```mermaid
-flowchart LR
-  subgraph sources [Text sources]
-    ISS[Issues · comments · descriptions]
-    GH[Repo / code metadata]
-  end
-  subgraph indexing [Semantic retrieval]
-    VEC[Vectorization]
-    IDX[(Vector index)]
-  end
-  ISS --> VEC
-  GH --> VEC
-  VEC --> IDX
-```
+## Repository map
 
-**Typical request flow (cached user read):** `GET /api/users/{id}` → service checks Redis cache (`users` cache) → on miss, loads from PostgreSQL and populates cache (TTL ~60s).
+| Path | Responsibility |
+|------|----------------|
+| `jira-backend/` | Spring Boot domain API, business data, search bar (OpenSearch), object storage, and Kafka publishing |
+| `vectorization-service/` | Kafka ingestion, document extraction/chunking, embeddings, pgvector, hybrid retrieval, reranking |
+| `ai-service/` | Corrective RAG, structured tools, drafting/planning, LangGraph rollout and sprint recovery, MCP server, eval gate |
+| `docs/` | Architecture, schema/API design, AWS deployment, and an ER diagram |
+| `observability/` | Optional Prometheus, Grafana, and Phoenix overlay |
+| `litellm-gateway/` | LLM/embedding egress gateway — per-service keys, budgets, rate limits, model routing, trace export |
+| `seed-data/` | Demo workspaces for local and staging environments |
+| `scripts/` | Local stack, test and eval orchestration |
 
-### Runtime topology (local development)
+Important documents:
 
-How processes fit on one machine: the SPA (usually Vite on port **5173**) talks to Spring Boot (**8080**); the backend reaches data services from **Docker Compose** (defaults from `docker-compose.yml`).
-
-```mermaid
-flowchart TB
-  subgraph host [Developer host]
-    SPA[React SPA / Vite :5173]
-    API[Spring Boot :8080]
-  end
-  subgraph compose [Docker Compose]
-    PG[(PostgreSQL :5432)]
-    RD[(Redis :6379)]
-    MN[MinIO :9000 API / :9001 console]
-    KF[Kafka :9092]
-  end
-  SPA -->|REST JSON + Bearer JWT| API
-  API -->|JDBC / Flyway| PG
-  API -->|Spring Data Redis| RD
-  API -->|AWS S3 SDK path-style| MN
-  API -->|optional: attachment ingestion| KF
-```
-
----
-
-## Prerequisites
-
-- **JDK 17**
-- **Docker** + Docker Compose (recommended for Postgres, Redis, MinIO; add Kafka services when exercising attachment → Kafka POC)
-- **Node.js 20+** (or compatible) and **npm** for the SPA (**jira-agentic-ai-web** repo)
-
----
+- [Architecture](docs/ARCHITECTURE.md)
+- [AI architecture and workflows](docs/AI_ARCHITECTURE.md)
+- [AI service](ai-service/README.md)
+- [Vectorization service](vectorization-service/README.md)
+- [Database schema](docs/DATABASE_SCHEMA_CORE.md)
+- [Core API design](docs/API_DESIGN_CORE.md)
+- [AI Feedback](docs/AI_FEEDBACK.md)
 
 ## Local development
 
-### 1. Start Docker Compose (from this repo root)
+Prerequisites: JDK 17, Python 3.11, Docker Compose, and Node 20+ for the separate SPA. Real AI calls
+go through the LiteLLM gateway (`litellm-gateway/`, started by `docker compose`), which needs
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `GEMINI_API_KEY` in the root `./.env` (gitignored); hermetic unit tests need none of them.
 
-Run in the directory that contains **`docker-compose.yml`** (the **`jira-agentic-ai`** repo root):
+The simplest path is:
 
 ```bash
-cd /path/to/jira-agentic-ai
+# Create each Python venv once and install its requirements first.
+scripts/dev_up.sh
+scripts/dev_up.sh status
+```
+
+`dev_up.sh` starts or reuses Compose infrastructure, `jira-backend`, both Python services, and the
+sibling SPA (whose Vite dev server is also the API proxy).
+Processes started by the script write logs below `/tmp/sprint-orchestra-dev/` and can be stopped with
+`scripts/dev_up.sh down`.
+
+Manual startup:
+
+```bash
 docker compose up -d
-# docker-compose up -d   # if your Docker CLI uses the legacy command
-docker ps
-```
-
-Compose file defines:
-
-| Service | Container | Port | DB / notes |
-|---------|-----------|------|------------|
-| postgres | `poc-postgres` | 5432 | DB `pocdb`, user `poc`, password `poc123` |
-| redis | `poc-redis` | 6379 | No auth in default compose |
-| minio | `poc-minio` | 9000 (S3), 9001 (console) | Access key/secret: `minioadmin` |
-| zookeeper | `poc-zookeeper` | 2181 | For local Kafka |
-| kafka | `poc-kafka` | 9092 | Broker (`localhost:9092` from host) |
-| kafka-ui | `poc-kafka-ui` | 8989 | UI → `http://localhost:8989` |
-
-MinIO console: `http://localhost:9001`
-
-**Kafka (optional):** When **`APP_KAFKA_ATTACHMENT_INGESTION_ENABLED=true`**, **jira-backend** publishes a small **tracking JSON** after each successful attachment upload (topic **`jira.attachment.ingestion`**, override with **`APP_KAFKA_ATTACHMENT_INGESTION_TOPIC`**). Fields include **`eventId`**, **`eventType`**, **`issueKey`**, **`attachmentId`**, **`filename`**, **`byteSize`**, **`storageBackend`**, **`storageKey`**, **`emittedAt`**, etc., so you can correlate logs across services. Broker: **`SPRING_KAFKA_BOOTSTRAP_SERVERS`** (default `localhost:9092`).
-
-**Quick POC — prove messages are consumed:** with Compose Kafka up, enable the producer (`APP_KAFKA_ATTACHMENT_INGESTION_ENABLED=true` in your environment), run **`./gradlew :jira-backend:bootRun`**, then **`./gradlew :tmp-kafka-consumer-poc:bootRun`**. Trigger an attachment **upload** (see SPA behaviour below) and watch the **Tmp Kafka POC** console for **`[tmp-kafka-consumer-poc]`** lines (**`System.out`** + SLF4J).
-
-**Kafka UI:** open **`http://localhost:8989`** → cluster **local** → **Topics** → **`jira.attachment.ingestion`** (or your `APP_KAFKA_ATTACHMENT_INGESTION_TOPIC`) → **Messages** to inspect payloads / offsets.
-
-**Local credentials:** provide OAuth credentials and other secrets through environment variables. IntelliJ `.run/` configurations are gitignored; never commit credentials in run configurations or project files.
-
-### 2. Run the backend
-
-```bash
 ./gradlew :jira-backend:bootRun
+
+cd vectorization-service
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --port 8100
+
+cd ../ai-service
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --host 127.0.0.1 --port 8200
+
+cd ../../sprint-orchestra-studio
+npm install && npm run dev        # http://localhost:5173, proxies the API
 ```
 
-Default: **http://localhost:8080**
+On first start, jira-backend generates a local JWT signing key at
+`~/.sprint-orchestra/jwt-dev-signing-key.pem` and reuses it after restarts.
 
-For the edge gateway module (when configured): `./gradlew :gateway:bootRun`.
+Default infrastructure:
 
-Requires Postgres, Redis, and MinIO to be reachable using `application.yml` defaults.
+| Service | Port | Notes |
+|---------|------|-------|
+| Vite dev server | 5173 | Browser entry point and API proxy (in `sprint-orchestra-studio`) |
+| jira-backend | 8081 | Internal core API |
+| vectorization-service | 8100 | Internal retrieval API |
+| ai-service | 8200 | Internal AI API |
+| PostgreSQL | 5432 | Core data and LangGraph checkpoints |
+| PostgreSQL `pocdb.rag` | 5432 (same instance) | Derived text, vectors, extraction cache and ingestion state; restricted `rag` role |
+| Redis Stack | 6379 | Spring cache and AI semantic cache/RediSearch |
+| Kafka / Kafka UI | 9092 / 8989 | Event bus and local UI |
+| MinIO API / console | 9000 / 9001 | Attachment object storage |
+| LiteLLM gateway | 4000 | LLM/embedding egress for both Python services; starts with `docker compose up` |
 
-### 3. Run the SPA (separate repo)
+AI defaults enable Redis caching, durable rollout and sprint recovery. For a minimal standalone AI
+process, either start Redis/Postgres or explicitly disable the features in `ai-service/.env.example`.
 
-Check out **`jira-agentic-ai-web`** next to this project (or anywhere), then:
+## API entry points
 
-```bash
-cd jira-agentic-ai-web   # path to the standalone Vite app
-npm install
-npm run dev
-```
+Browser calls use these paths on the app's own origin:
 
-Default Vite dev server: **http://localhost:5173**
+| Area | Path |
+|------|--------------|
+| Auth | `/api/auth/**` |
+| Core Jira API | `/api/**` |
+| Ask AI and AI workflows | `/api/ai/**` |
+| MCP server for external agents | `/api/ai/mcp` |
+| Swagger UI | `/swagger-ui.html` |
+| OpenAPI JSON | `/v3/api-docs` |
 
-Point the SPA at the API (see [Frontend](#frontend)); backend still expects `FRONTEND_BASE_URL` / `app.frontend.base-url` (default `http://localhost:5173`) for OAuth redirects.
+The internal Python endpoints and their exact request/response shapes are documented in the two
+service READMEs and generated FastAPI OpenAPI documents.
 
-### 4. Smoke test
+## Data and RAG flow
 
-- Health / root: `GET http://localhost:8080/`
-- Obtain JWT:
+1. A committed issue, comment, history, or attachment change emits a Kafka event.
+2. `vectorization-service` consumes at least once and applies deterministic upserts/deletes to its
+   own pgvector and OpenSearch chunk index. Attachment binaries are fetched from MinIO/S3.
+3. `/search` combines dense and lexical ranks using RRF and optionally reranks candidates with a
+   cross-encoder. Structured endpoints provide exact issue, sprint, comment, detail, attachment, and
+   transition data when semantic top-k retrieval is the wrong abstraction.
+4. `ai-service` exposes eight retrieval tools to the model and injects the caller's authorized `space_ids` in code.
+   The model can select queries and filters but cannot expand authorization scope.
+5. The CRAG loop can reformulate and retrieve again, then verifies grounded claims, returns citations,
+   or uses the fixed abstention contract when evidence is insufficient.
 
-```bash
-curl -s -X POST http://localhost:8080/api/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"username":"<your-user>","password":"<password>"}'
-```
+The durable workflows use LangGraph with Postgres checkpointing:
 
-- Call a protected endpoint:
-
-```bash
-curl -s http://localhost:8080/api/spaces \
-  -H "Authorization: Bearer <access_token>"
-```
-
----
+- Epic rollout pauses for approval before any Jira write and supports idempotent resume/retry.
+- Sprint recovery diagnoses risk, clarifies missing facts, proposes a plan, pauses for human review,
+  executes approved actions, and supports re-evaluation/history/time travel.
+- Workflow reads and mutations are owner-authorized and recheck space membership on resume.
 
 ## Configuration
 
-Configuration is in **`jira-backend/src/main/resources/application.yml`**. For **12-factor** / production, override with environment variables (Spring Boot relaxed binding).
+Configuration is environment-driven. Start from:
 
-| Concern | Property / env | Notes |
-|---------|----------------|--------|
-| JDBC URL | `SPRING_DATASOURCE_URL`, `SPRING_DATASOURCE_USERNAME`, `SPRING_DATASOURCE_PASSWORD` | Use secrets in production |
-| Redis | `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT` | |
-| Attachments backend | `app.attachments.storage` (`local` or `s3`) | Current default is `s3` for local MinIO |
-| Local file fallback dir | `app.attachments.dir` / `APP_ATTACHMENTS_DIR` | Used when `storage=local` |
-| S3 endpoint/bucket/creds | `app.attachments.s3.*` / `APP_ATTACHMENTS_S3_*` | For MinIO locally, AWS S3 in cloud |
-| JWT signing | `APP_JWT_SECRET` | **HS256**: use a **strong random secret ≥ 32 bytes**; never commit real secrets |
-| JWT TTL | `APP_SECURITY_JWT_EXPIRES_MINUTES` (if mapped) or extend config | Currently `app.security.jwt.expires-minutes` in YAML |
-| JPA SQL logging | `SPRING_JPA_SHOWSQL` | Disable in production |
-| Flyway | `SPRING_FLYWAY_*` | e.g. `enabled`, `baseline-on-migrate` |
-| Kafka bootstrap | `SPRING_KAFKA_BOOTSTRAP_SERVERS` | Default `localhost:9092` |
-| Attachment → Kafka | `APP_KAFKA_ATTACHMENT_INGESTION_ENABLED`, `APP_KAFKA_ATTACHMENT_INGESTION_TOPIC` | `false` by default; topic default `jira.attachment.ingestion`; POC consumer **`tmp-kafka-consumer-poc`** uses the same topic |
+- `ai-service/.env.example`
+- `vectorization-service/.env.example`
+- `jira-backend/src/main/resources/application.yml`
 
-Example (Unix):
+The trust settings that must be set outside local development:
 
-```bash
-export APP_JWT_SECRET="$(openssl rand -base64 48)"
-export SPRING_DATASOURCE_URL="jdbc:postgresql://host:5432/pocdb"
-./gradlew :jira-backend:bootRun
-```
+- `APP_JWT_PRIVATE_KEY` (PKCS#8 PEM) on jira-backend, with `APP_JWT_ALLOW_GENERATED_KEY=false` so a
+  missing key fails startup instead of each instance minting its own.
+- `AI_JWT_JWKS_URL` on ai-service, pointing at jira-backend's `/.well-known/jwks.json` (or, later, an
+  external issuer's; set `APP_JWT_JWK_SET_URI` on jira-backend to match).
+- `INTERNAL_SERVICE_TOKEN` on jira-backend, `AI_INTERNAL_SERVICE_TOKEN` on ai-service and
+  `VEC_INTERNAL_SERVICE_TOKEN` on vectorization-service, the same
+  value: it authenticates service calls and signs AI feedback receipts.
 
-Current local defaults in `application.yml`:
+Never deploy with the repository's development secrets or plaintext defaults.
 
-- `app.attachments.storage: s3`
-- `app.attachments.s3.endpoint: http://localhost:9000`
-- `app.attachments.s3.bucket: jira-attachments`
+## Build and test
 
----
-
-## Database & Flyway
-
-- Scripts live under **`jira-backend/src/main/resources/db/migration/`** (`V1`..`V17`).
-- **`spring.jpa.hibernate.ddl-auto: validate`** — schema is **not** auto-updated by Hibernate at runtime; it must match entities + migrations.
-- **`spring.flyway.baseline-on-migrate: true`** + **`baseline-version: 1`**: if the database **already contains tables** but no `flyway_schema_history`, Flyway will **baseline** at version 1 and **skip** `V1` (assumes schema already matches). For a **truly empty** database, Flyway applies `V1` normally.
-- `V10` introduces **space soft-delete** (`spaces.deleted_at`) and active-only unique key index for `space_key`.
-- `V11`–`V14` add user OAuth identifiers and normalize local seed-account data.
-- `V15` removes the obsolete `work_logs` table.
-- `V16` adds per-space `sprints.sprint_order` for backlog ordering.
-- `V17` removes type-like values (`bug`, `story`, `epic`) from issue labels; issue type remains in `issues.issue_type`.
-
-**New environment:** empty database → Flyway runs migrations from scratch.  
-**Existing environment:** ensure baseline/migrations match reality; otherwise repair or migrate intentionally.
-
----
-
-## Authentication & authorization
-
-1. **Login for SPA:** `POST /api/auth/token` with JSON `{ "username", "password" }` → returns JWT + user payload (`AuthTokenResponse`).
-2. **Subsequent API calls:** send `Authorization: Bearer <token>` to the gateway.
-3. **Gateway:** validates the JWT, removes the client authorization header, and forwards trusted user identity headers to the backend.
-4. **Backend:** accepts the gateway trust header and uses forwarded identity for protected **`/api/**`** routes.
-
-**Public at the gateway (no JWT) in current code** (intended for dev / onboarding — **tighten before production**):
-
-- `/api/auth/**`
-- `/api/users/**` (list/get/create/delete are **permitAll** today)
-- Swagger/OpenAPI paths
-- `/oauth2/**`, `/login/**` when OAuth2 client is configured
-
-All other **`/api/*`** routes require a valid JWT at the gateway. Direct backend calls still require the configured internal gateway trust header.
-
----
-
-## HTTP API overview
-
-Base URL: **`/api`**
-
-| Area | Base path |
-|------|-----------|
-| Auth | `GET /api/auth/config`, `POST /api/auth/token` |
-| Users | `/api/users` |
-| Groups | `/api/groups`, `/api/groups/{id}/members`, … |
-| Spaces | `/api/spaces`, `.../members`, `.../groups` |
-| Sprints | `/api/spaces/{spaceId}/sprints`, `.../{id}/complete`, `.../{id}/reorder` |
-| Issues | `/api/spaces/{spaceId}/issues` |
-| Comments | `/api/issues/{issueId}/comments` (`issueId` = numeric issue id) |
-
-Exact verbs and bodies: use **Swagger** or read controller classes under `controller/`.
-
----
-
-## OpenAPI (Swagger)
-
-With the backend running:
-
-| Resource | URL |
-|----------|-----|
-| Swagger UI | http://localhost:8080/swagger-ui.html |
-| OpenAPI JSON | http://localhost:8080/v3/api-docs |
-
----
-
-## Frontend
-
-The browser UI lives only in the **`jira-agentic-ai-web`** repository (not under this repo). Clone it and follow its `README.md`.
-
-- **API base URL:** `VITE_API_URL` (Vite env). If unset, defaults to **`http://localhost:8080`** (see `src/api/client.ts` in that repo).
-- **Auth token:** stored in `localStorage` under `jira_auth_token`; attached automatically to API calls.
-
-**Example `.env.local` in `jira-agentic-ai-web/` (not committed):**
-
-```env
-VITE_API_URL=http://localhost:8080
-```
-
-**CORS:** `CorsConfig` allows browser origins matching `http://localhost:*` and `http://127.0.0.1:*` on `/api/**`. For production, replace with explicit allowed origins.
-
-**Main routes (authenticated):** `/spaces`, `/groups`, `/space`, `/board`, `/backlog`, `/ticket/:ticketId`, etc.; `/login` is public.
-
-See **`jira-agentic-ai-web/README.md`** for SPA-specific behaviour (description embed vs attachment panel uploads).
-
----
-
-## Attachments, deletes & Kafka
-
-| Topic | Behaviour |
-|--------|-----------|
-| **Kafka `attachment_uploaded`** | After a **successful upload** (`POST /api/issues/{issueId}/attachments`) when **`APP_KAFKA_ATTACHMENT_INGESTION_ENABLED=true`**. |
-| **Kafka `attachment_deleted`** | After a **successful delete** (`DELETE …/attachments/{id}`) or when **embedded** attachments are garbage-collected (no longer referenced in issue description or any comment HTML after a save). Same topic; `eventType` distinguishes upload vs delete. |
-| **Delete attachment** (`DELETE …/attachments/{id}`) | Removes the row and binary; emits **`attachment_deleted`** when Kafka ingestion is enabled. Does not rewrite description/comment HTML automatically. |
-| **SPA upload timing (scheme A)** | **Description** embeds: staged with blob preview until **Save** (then upload → Kafka). **Comment** embeds: upload on **Add comment** / **Save** edit. **+ Add attachment** panel: upload immediately when chosen. |
-
----
-
-## Build, test, quality
-
-### Backend
+Run the CI-equivalent suites locally:
 
 ```bash
-./gradlew :jira-backend:compileJava
-./gradlew :jira-backend:test
-./gradlew :jira-backend:bootJar    # artifact: jira-backend/build/libs/*.jar
+scripts/run_all_tests.sh
+
+# Individual suites
+scripts/run_all_tests.sh ai
+scripts/run_all_tests.sh vec
+scripts/run_all_tests.sh backend
 ```
 
-### SPA (`jira-agentic-ai-web`)
+The AI durable-workflow integration tests use PostgreSQL when reachable; CI starts an isolated
+Postgres service so crash/resume cases cannot silently remain skipped. GitHub Actions runs all three
+service suites from `.github/workflows/ci.yml`, and also builds all three container images.
+
+### Container images
+
+Each service has a Dockerfile. jira-backend builds from the repo root (Gradle multi-project), the
+Python ones from their own directory:
 
 ```bash
-cd jira-agentic-ai-web
-npm run build        # tsc -b && vite build → dist/
-npm run lint
-npm run preview      # local preview of production build
+docker build -f jira-backend/Dockerfile -t sprint-orchestra/jira-backend .
+docker build -t sprint-orchestra/vectorization-service vectorization-service
+docker build -t sprint-orchestra/ai-service ai-service
 ```
 
-### Conventions (recommended)
+Configuration comes from environment variables (Spring relaxed binding for jira-backend), e.g.
+`SPRING_DATASOURCE_URL`, `SPRING_DATA_REDIS_HOST`, `SPRING_KAFKA_BOOTSTRAP_SERVERS`,
+`APP_OPENSEARCH_URI`, `APP_ATTACHMENTS_S3_ENDPOINT`. The Gradle wrapper is pinned to 8.x because the
+Spring Boot 3.2 plugin cannot package (`bootJar`) on Gradle 9.
 
-- **Java:** JDK 17, Lombok for boilerplate; keep controllers thin, DTOs for I/O, services for business rules.
-- **TypeScript (SPA repo):** prefer explicit types for public APIs; colocate API modules under `src/api/`.
-- **REST:** consistent use of HTTP status codes; errors surfaced via `GlobalExceptionHandler` on the backend.
-- **Migrations:** any schema change → **new** Flyway script (`V2__…`, `V3__…`), avoid editing applied migrations.
+Beyond unit tests:
 
----
+- `scripts/run_rag_eval.sh smoke|gate` runs the AI eval gate against the local stack; see
+  [ai-service/README.md](ai-service/README.md#eval-gate).
+- `observability/` holds the Prometheus, Grafana and Phoenix setup.
 
-## Production deployment checklist
+## Security posture and known gaps
 
-- [ ] **Secrets:** `APP_JWT_SECRET` and DB credentials from a secret manager; rotate periodically.
-- [ ] **Datasource / Redis:** managed instances, TLS where supported; network isolation.
-- [ ] **Flyway:** `baseline-on-migrate` only if you understand the implications; prefer clean migration history for new environments.
-- [ ] **JPA:** turn off `show-sql`; set `ddl-auto` to `validate` (or `none`).
-- [ ] **CORS:** restrict to real frontend origin(s); avoid `*` with credentials.
-- [ ] **Security:** remove or protect **`/api/users/**`** permitAll; enforce authentication/authorization per resource.
-- [ ] **Passwords:** current dev auth compares plaintext — replace with **password hashing** (e.g. BCrypt) before any real user data.
-- [ ] **HTTPS** termination (reverse proxy or platform ingress).
-- [ ] **Observability:** structured logging, metrics, health checks (`/actuator` if you add the dependency).
-- [ ] **Frontend:** `npm run build` → serve `dist/` via CDN or static hosting; set `VITE_API_URL` to the public API URL at build time.
+Implemented controls include RS256 JWT verification in every service, identity taken only from
+verified claims or the internal service token, space-scoped AI retrieval, workflow-owner checks, resume-time membership checks, bounded
+agent/workflow loops, and idempotent durable writes.
 
----
+Before handling real users or exposing this publicly, at minimum:
 
-## Security notes
+- Decide whether the public demo accounts (password `123`, one-click buttons on the login page)
+  should exist on a public deployment; `app.auth.demo-accounts-enabled=false` hides the buttons.
+  Passwords are bcrypt hashes (V35); `/api/users` needs a sign-in, and creating or deleting accounts
+  needs the internal service token.
+- Enforce membership/role authorization consistently on every core resource mutation and remove APIs
+  that accept an arbitrary user id as their authorization source.
+- Bind internal ports to private interfaces/security groups; expose only HTTPS through CloudFront.
+- Add WAF rate rules at the edge. Per-user AI limits already exist in ai-service (20 requests a
+  minute, $2 a day by default), and LiteLLM budgets cap each service's total.
+- Replace default JWT/internal/LiteLLM/DB/MinIO secrets, restrict CORS, enable TLS, and store secrets
+  in a managed secret store.
+- Add an outbox/CDC publisher and DLQ. The current `AFTER_COMMIT` Kafka publisher has a crash window
+  between database commit and publish.
+- Extend tracing to jira-backend and the Kafka hop. ai-service, vectorization-service and the
+  gateway already share one trace per request.
 
-- Default JWT secret in YAML is **for development only**.
-- **User management APIs are wide open** in `SecurityConfig` today — treat as **technical debt** before production.
-- **CSRF:** disabled for stateless JWT API usage; if you add cookie-based sessions, revisit CSRF strategy.
-
----
-
-## Troubleshooting
-
-| Symptom | Likely cause |
-|---------|----------------|
-| Flyway / Hibernate validate error | DB schema drift vs entities or edited `V1`; use new migration or align DB |
-| Connection refused (5432 / 6379) | Docker services not running or wrong host/port |
-| Attachment upload/download fails | MinIO not running on `9000`, bucket/credentials mismatch, or storage mode misconfigured |
-| Kafka producer silent | Set **`APP_KAFKA_ATTACHMENT_INGESTION_ENABLED=true`**; ensure broker is up on **`SPRING_KAFKA_BOOTSTRAP_SERVERS`**; description-embed uploads fire after **Save** in the SPA; deletes emit **`attachment_deleted`** |
-| POC consumer shows nothing | Consumer must use the **same topic** as backend; produce events via an actual **upload** after enabling the producer env |
-| CORS error from browser | Origin not matching `CorsConfig` patterns; or missing `VITE_API_URL` |
-| 401 on `/api/spaces` etc. | Missing/expired JWT; login via `/api/auth/token` |
-| Redis warnings at startup | Ensure Redis is up if cache auto-config is active |
-| `Port 8080 already in use` | Another local Java process is listening on 8080; stop it or run with `--server.port=8081` |
-
----
-
-## License
-
-Specify your license here (e.g. MIT, Apache-2.0, or proprietary).
+This is deliberately not labeled production-ready.

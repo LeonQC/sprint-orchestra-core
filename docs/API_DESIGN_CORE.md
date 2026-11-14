@@ -17,7 +17,11 @@
   - [10. Issue Link Endpoints](#10-issue-link-endpoints)
   - [11. Code Link Endpoints](#11-code-link-endpoints)
   - [12. Space GitHub Repo Endpoints](#12-space-github-repo-endpoints)
+  - [13. Label Endpoints](#13-label-endpoints)
+  - [14. Search Endpoints](#14-search-endpoints)
+  - [15. AI Feedback Endpoints](#15-ai-feedback-endpoints)
   - [Error Response Pattern](#error-response-pattern)
+  - [Internal authoritative AI retrieval](#internal-authoritative-ai-retrieval)
 
 ---
 
@@ -26,7 +30,7 @@
 This document describes the APIs currently exposed by the **`jira-backend`** controllers and runtime OpenAPI contract.
 
 - Base URL: `/api`
-- Auth: clients send `Authorization: Bearer {access_token}` to the gateway; the gateway validates JWT and forwards trusted user identity to the backend
+- Auth: clients send `Authorization: Bearer {access_token}`; jira-backend verifies the RS256 JWT itself and takes the user from its claims. Service-to-service calls send `X-Internal-Token` instead (optionally with `X-User-Id` / `X-Username` to act as a user)
 - Content-Type: `application/json` unless otherwise specified
 
 ---
@@ -73,22 +77,28 @@ This section adds the "when/why/what" for every API family so readers can unders
 - `GET /api/auth/config` - **When:** login page or app bootstrap loads;
 
 **Why:** decide whether the GitHub OAuth login option should be shown; **What:** returns the current public GitHub OAuth enablement flag.
+- `GET /api/auth/demo-accounts` - **When:** the login page loads, before sign-in;
+
+**Why:** show one-click buttons for the demo accounts; **What:** public list of accounts that have a password, with only `id`, `username`, `name`, `avatarColor` (no email). Empty when `app.auth.demo-accounts-enabled=false`.
 - `POST /api/auth/token` - **When:** username/password login form is submitted;
 
 **Why:** obtain a bearer token for protected calls; **What:** authenticates the user and returns JWT + expiry + user summary.
+- `GET /.well-known/jwks.json` - **When:** ai-service or vectorization-service starts verifying tokens;
+
+**Why:** the other services verify jira-backend's JWTs themselves; **What:** public RS256 key set (no auth required).
 
 ### 2) Users
 
-- `GET /api/users` - **When:** assignee/reporter/member pickers open;
+- `GET /api/users` - **When:** assignee/reporter/member pickers open; signed-in users only;
 
 **Why:** populate selectable users; **What:** returns user list for UI options.
-- `GET /api/users/{id}` - **When:** profile/owner display needs one user;
+- `GET /api/users/{id}` - **When:** profile/owner display needs one user; signed-in users only;
 
 **Why:** resolve a specific user reference; **What:** returns one user DTO.
-- `POST /api/users` - **When:** admin or setup flow creates account;
+- `POST /api/users` - **When:** an ops script creates an account; internal service token only (users come from GitHub sign-in);
 
 **Why:** register a new actor in the system; **What:** persists user and returns created user summary.
-- `DELETE /api/users/{id}` - **When:** admin removes account;
+- `DELETE /api/users/{id}` - **When:** an ops script removes an account; internal service token only;
 
 **Why:** deprovision user access; **What:** deletes user record (204).
 
@@ -204,7 +214,7 @@ This section adds the "when/why/what" for every API family so readers can unders
 **Why:** show discussion thread; **What:** returns comment timeline.
 - `POST /api/issues/{issueId}/comments` - **When:** user submits comment;
 
-**Why:** capture collaboration context; **What:** creates and returns comment.
+**Why:** capture collaboration context; **What:** creates and returns comment. With `parentId` it is a reply (threads are two levels deep).
 - `PUT /api/issues/{issueId}/comments/{commentId}` - **When:** comment edit action;
 
 **Why:** correct/update comment content; **What:** updates and returns comment.
@@ -286,6 +296,24 @@ This section adds the "when/why/what" for every API family so readers can unders
 
 **Why:** discover issue references and keep links up to date; **What:** scans repo activity and returns scan stats.
 
+### 13) Labels
+
+- `GET /api/spaces/{spaceId}/labels` - **When:** label picker or space settings loads;
+
+**Why:** show the space-scoped label catalog; **What:** returns active labels for the space (excludes soft-deleted and the internal `flagged` label).
+- `POST /api/spaces/{spaceId}/labels` - **When:** user creates a new label from settings or inline picker;
+
+**Why:** add a reusable tag to the space catalog; **What:** creates or reactivates a label and returns `LabelDto`. Reserved names (`bug`, `story`, `epic`, `flagged`) are rejected.
+- `DELETE /api/spaces/{spaceId}/labels/{labelId}` - **When:** user removes a label from the space catalog;
+
+**Why:** retire a label without deleting historical issue rows; **What:** soft-deletes the label, removes it from all issues in the space, and records label history events.
+
+### 14) Search
+
+- `GET /api/search?q=&limit=` - **When:** global quick-search box is used in the SPA;
+
+**Why:** find issues and comments across all spaces the caller can access; **What:** returns ranked hybrid search hits scoped to the authenticated user's active space memberships. Empty or blank `q` returns an empty list.
+
 ---
 
 ## Response Body Templates (Shared)
@@ -355,11 +383,59 @@ The endpoint-specific section still defines status code, purpose, request, and p
   "startDate": "2026-04-15",
   "endDate": "2026-04-28",
   "status": "future",
-  "sprintOrder": 2
+  "sprintOrder": 2,
+  "initialCommittedPoints": 34,
+  "initialCompletedPoints": 0,
+  "finalScopePoints": 42,
+  "completedPoints": 38,
+  "initialIssueCount": 12,
+  "completedIssueCount": 10,
+  "finalIssueCount": 14,
+  "unestimatedIssueCount": 1,
+  "commitmentCompletionPercent": 0,
+  "finalScopeCompletionPercent": 90
 }
 ```
 
-Current service logic uses lowercase sprint statuses: `future`, `active`, and `completed`.
+Current service logic uses lowercase sprint statuses: `future`, `active`, and `completed`. Metric columns are populated when a sprint is completed and are derived from `sprint_issue_history`. Percent fields are computed in `SprintDto.from` and may be `null` when the underlying totals are missing or zero.
+
+### `LabelDto`
+
+```json
+{
+  "id": 501,
+  "spaceId": 10,
+  "name": "Frontend"
+}
+```
+
+### `SearchResultDto`
+
+```json
+{
+  "type": "ISSUE",
+  "resultId": 1001,
+  "matchType": "FULL_TEXT",
+  "spaceId": 10,
+  "issueId": 1001,
+  "issueKey": "PLT-42",
+  "title": "Fix drag order mismatch",
+  "snippet": "... board view <b>repro</b> ...",
+  "rank": 1042.5,
+  "matchedFields": ["title", "description"],
+  "exactMatch": true,
+  "exactSnippet": "... board view <b>repro</b> ...",
+  "updatedAt": "2026-04-29T20:05:00Z"
+}
+```
+
+- `type`: `ISSUE` or `COMMENT`
+- `resultId`: issue id for an `ISSUE` hit, comment id for a `COMMENT` hit; `type + resultId` is unique in a result list (`issueId` is not)
+- `matchType`: `EXACT_KEY`, `FULL_TEXT`, `SUBSTRING`, or `FUZZY` (which tier found the hit)
+- `matchedFields`: which fields matched, from `key`, `title`, `description`, `labels`, `attachment`, `comment`
+- `exactMatch`: whether the query text appears literally (case-insensitive); the UI's "Exact only" filter uses it
+- `exactSnippet`: snippet around the literal match; `null` when `exactMatch` is false
+- For `COMMENT` hits, `title` holds the parent issue title and `issueId` / `issueKey` identify that parent issue
 
 ### `IssueDto`
 
@@ -407,9 +483,14 @@ Nested collections may be `null` on list paths and populated on the issue-detail
   "authorId": 2,
   "authorName": "Bob",
   "content": "<p>Root cause identified.</p>",
+  "parentId": null,
+  "replyToId": null,
   "createdAt": "2026-04-29T20:00:00Z"
 }
 ```
+
+- `parentId`: `null` for a top-level comment; for a reply, the top-level comment of its thread
+- `replyToId`: the comment a reply answered (may itself be a reply); `null` after that comment is deleted
 
 ### `IssueAttachmentDto`
 
@@ -603,6 +684,36 @@ Nested collections may be `null` on list paths and populated on the issue-detail
 
 ---
 
+### 1.3 Get JWT Verification Keys
+
+**Purpose:** Publish the public key that signs jira-backend's access tokens.
+
+**When called:** ai-service and vectorization-service fetch it to verify `Authorization: Bearer` tokens
+without calling jira-backend on every request.
+
+**Persistence (data layer)**
+
+**Tables:** `N/A`
+**Flow:** `JwksController.jwks` (no `JpaRepository`)
+
+**Endpoint:** `/.well-known/jwks.json`  
+**Method:** `GET`  
+**Auth:** none
+
+**Response:** (200 OK)
+
+`kid` is the key's RFC 7638 thumbprint, so it stays the same across restarts with the same key.
+
+```json
+{
+  "keys": [
+    { "kty": "RSA", "e": "AQAB", "kid": "NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs", "n": "0vx7agoebGcQ..." }
+  ]
+}
+```
+
+---
+
 ## 2. User Endpoints
 
 ### 2.1 Get All Users
@@ -683,7 +794,10 @@ Nested collections may be `null` on list paths and populated on the issue-detail
 
 **Purpose:** Create a new user.
 
-**When called:** admin/setup flow submits new account form.
+**Auth:** internal service token (`X-Internal-Token`) only; a browser JWT gets `403`. Normal users are
+created by GitHub sign-in, and the demo users by migration `V36`.
+
+**When called:** an ops script creates an account.
 
 **Why:** onboard a new system user.
 
@@ -728,7 +842,9 @@ Nested collections may be `null` on list paths and populated on the issue-detail
 
 **Purpose:** Delete a user.
 
-**When called:** admin triggers account removal.
+**Auth:** internal service token (`X-Internal-Token`) only; a browser JWT gets `403`.
+
+**When called:** an ops script removes an account.
 
 **Why:** revoke and remove an obsolete account.
 
@@ -1766,6 +1882,8 @@ See the shared `IssueDto` template.
 **Why:** persist discussion context.
 
 **After call:** backend saves comment, records history event, and returns created `CommentDto`.
+Replying to a reply attaches the new comment to the same thread: `parentId` becomes the thread's
+top-level comment and `replyToId` keeps the comment that was answered.
 
 **Persistence (data layer)**
 
@@ -1781,9 +1899,12 @@ See the shared `IssueDto` template.
 ```json
 {
   "authorId": 2,
-  "content": "<p>I can reproduce this issue.</p>"
+  "content": "<p>I can reproduce this issue.</p>",
+  "parentId": 1998
 }
 ```
+
+- `parentId` (optional): the comment being answered; omit for a top-level comment
 
 **Response:** (200 OK) `CommentDto`
 
@@ -1794,6 +1915,8 @@ See the shared `IssueDto` template.
   "authorId": 2,
   "authorName": "Alice",
   "content": "<p>I can reproduce this issue.</p>",
+  "parentId": 1998,
+  "replyToId": 1998,
   "createdAt": "2026-04-29T20:00:00Z"
 }
 ```
@@ -2525,6 +2648,174 @@ See the shared `IssueCodeLinkDto` template.
 
 ---
 
+## 13. Label Endpoints
+
+### 13.1 List Space Labels
+
+**Purpose:** Retrieve the active label catalog for one space.
+
+**When called:** label picker, filter panel, or space label settings loads.
+
+**Why:** UI needs selectable labels scoped to the current space.
+
+**After call:** backend returns active labels ordered by name. Soft-deleted labels and the internal `flagged` label are omitted.
+
+**Persistence (data layer)**
+
+**Tables:** `labels`  
+**Flow:** `LabelController.getBySpace` → `LabelService.findBySpace` → `LabelRepository.findBySpace_IdAndDeletedAtIsNullOrderByNameAsc`
+
+**Endpoint:** `/api/spaces/{spaceId}/labels`  
+**Method:** `GET`
+
+**Response:** (200 OK) `LabelDto[]`
+
+See the shared `LabelDto` template.
+
+---
+
+### 13.2 Create Space Label
+
+**Purpose:** Create or reactivate a label in the space catalog.
+
+**When called:** user submits a new label name from settings or an inline create action.
+
+**Why:** add a reusable tag that can be assigned to issues in this space.
+
+**After call:** backend normalizes the name, rejects reserved values (`bug`, `story`, `epic`, `flagged`), creates a new row or reactivates a soft-deleted row with the same normalized name, and returns `LabelDto`.
+
+**Persistence (data layer)**
+
+**Tables:** `labels`, `spaces`  
+**Flow:** `LabelController.create` → `LabelService.create` → `SpaceRepository.findActiveByIdForUpdate` + `LabelRepository.save`
+
+**Endpoint:** `/api/spaces/{spaceId}/labels`  
+**Method:** `POST`
+
+**Request Body:**
+
+```json
+{
+  "name": "Frontend"
+}
+```
+
+**Response:** (200 OK) `LabelDto`
+
+**Error Response:** (400 Bad Request) when the name is blank, too long (> 50 characters), or reserved.
+
+---
+
+### 13.3 Delete Space Label
+
+**Purpose:** Soft-delete a label and remove it from all issues in the space.
+
+**When called:** user deletes a label from space settings.
+
+**Why:** retire a label from the catalog while preserving issue history.
+
+**After call:** backend removes the label from every linked issue, records `labels` field changes in `issue_history`, sets `labels.deleted_at`, and returns no-content success.
+
+**Persistence (data layer)**
+
+**Tables:** `labels`, `issue_labels`, `issues`, `issue_history`  
+**Flow:** `LabelController.delete` → `LabelService.delete` → `IssueRepository.findDistinctByLabels_Id` + `IssueRepository.saveAll` + `LabelRepository.save`
+
+**Endpoint:** `/api/spaces/{spaceId}/labels/{labelId}`  
+**Method:** `DELETE`
+
+**Response:** (204 No Content)
+
+---
+
+## 14. Search Endpoints
+
+### 14.1 Hybrid Search
+
+**Purpose:** Search issues and comments across all spaces the caller can access.
+
+**When called:** global quick-search UI submits a query.
+
+**Why:** let users jump to relevant tickets or comment threads without opening each space separately.
+
+**After call:** backend returns up to `limit` ranked hits using a tiered hybrid strategy:
+
+1. **Exact/prefix issue-key match** (`matchType = EXACT_KEY`) — always highest priority.
+2. **Full-text search** (`matchType = FULL_TEXT`) — OpenSearch `simple_query_string` + BM25 over issue title/description/labels/attachment filenames and comment content, with English stemming and separator normalization for `-`, `_`, `/`, `.`, `~`, `+` (a `pattern_replace` char filter). Field boosts: title^10, description^4, labels^2, filenames^1.
+3. **Literal substring** (`matchType = SUBSTRING`) — for queries of at least three characters, issues and comments whose text contains the query as typed (catches part numbers and partial words that stemming misses). Ranked below full-text hits.
+4. **Fuzzy fallback** (`matchType = FUZZY`) — OpenSearch `fuzziness: AUTO` (Levenshtein) over issue title/description, consulted only when the tiers above underfill the requested page size and the query is at least three characters. Comments have no fuzzy tier: a typo-tolerant scan of every comment in a space produced far more noise than hits.
+
+Results are deduplicated per issue/comment, sorted by a disjoint tier offset plus native rank, and capped at 50 rows.
+
+**Persistence (data layer)**
+
+**Tables:** `space_members` (read-only, in Postgres — the space scope is an authorization boundary and is resolved before the search runs). Issue and comment text is read from the OpenSearch indices `orchestra-issues` / `orchestra-comments`, which are derived from Postgres and rebuilt by `POST /internal/search/reindex`.  
+**Flow:** `SearchController.search` → `SearchService.search` → `SpaceMemberRepository.findActiveSpaceIdsByUserId` + `SearchQueries.searchIssuesByKeyPrefix` / `searchIssues` / `searchComments` / `searchIssuesBySubstring` / `searchCommentsBySubstring` / `searchIssuesFuzzy` (OpenSearch)
+
+**Endpoint:** `/api/search`  
+**Method:** `GET`
+
+**Query Parameters:**
+
+- `q` (string, required) — search text; blank values return `[]`
+- `limit` (integer, optional) — max results; default `20`, clamped to `1..50`
+
+**Response:** (200 OK) `SearchResultDto[]`
+
+See the shared `SearchResultDto` template.
+
+**Example:**
+
+```http
+GET /api/search?q=checkout+idempotency&limit=10
+```
+
+```json
+[
+  {
+    "type": "ISSUE",
+    "matchType": "FULL_TEXT",
+    "spaceId": 10,
+    "issueId": 1001,
+    "issueKey": "PLT-42",
+    "title": "Make checkout idempotent",
+    "snippet": "... duplicate submit must not create two orders ...",
+    "rank": 1042.5,
+    "updatedAt": "2026-04-29T20:05:00Z"
+  },
+  {
+    "type": "COMMENT",
+    "matchType": "FULL_TEXT",
+    "spaceId": 10,
+    "issueId": 1001,
+    "issueKey": "PLT-42",
+    "title": "Make checkout idempotent",
+    "snippet": "... verified idempotency key in sandbox ...",
+    "rank": 1038.1,
+    "updatedAt": "2026-04-28T16:20:00Z"
+  }
+]
+```
+
+---
+
+## 15. AI Feedback Endpoints
+
+Feedback on Ask AI answers and the owners' review queue. The request bodies, review rules and
+receipt check are described in [AI_FEEDBACK.md](AI_FEEDBACK.md).
+
+**Tables:** `ai_feedback`
+**Flow:** `AiFeedbackController` → `AiFeedbackService` (receipt checked by `FeedbackReceiptVerifier`; SQL through `NamedParameterJdbcTemplate`, ownership through `SpaceMemberRepository`)
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/ai-feedback` | Submit a rating for an answer, with the signed receipt ai-service returned |
+| GET | `/api/ai-feedback` | Review queue for spaces the caller owns; `status`, `query`, `page` |
+| GET | `/api/ai-feedback/{id}` | One item: question, answer snapshot, user feedback and review |
+| PUT | `/api/ai-feedback/{id}` | Save the review (`409` if someone else saved first) |
+
+---
+
 ## Error Response Pattern
 
 Errors handled by `GlobalExceptionHandler` use:
@@ -2537,7 +2828,7 @@ Errors handled by `GlobalExceptionHandler` use:
 }
 ```
 
-The auth-token endpoint's explicit `400` and `401` responses contain only `message`. Gateway or Spring Security failures may use their own `401` / `403` body.
+The auth-token endpoint's explicit `400` and `401` responses contain only `message`. Spring Security failures (missing, expired or invalid token) may use their own `401` / `403` body.
 
 Common status codes:
 
@@ -2547,3 +2838,22 @@ Common status codes:
 - `404 Not Found`
 - `409 Conflict`
 - `500 Internal Server Error`
+
+
+## Internal authoritative AI retrieval
+
+These private endpoints require `X-Internal-Token` with the internal-service role; public edge routes
+do not expose `/internal/**`. The authenticated AI boundary supplies the caller's authorized
+`space_ids`; no model-supplied scope is trusted.
+
+| Method | Path | Source |
+|---|---|---|
+| POST | `/internal/retrieval/issues/query` | `pocdb.public.issues` with sprint/parent/assignee joins; exact totals and breakdowns, limited ordered sample |
+| POST | `/internal/retrieval/issues/history` | Original `pocdb.public.issue_history`; filters, time range and reopen transitions |
+| POST | `/internal/retrieval/sprints/query` | Original `pocdb.public.sprints`; status/date ordering and metrics |
+
+The existing vectorization-service endpoints preserve their request/response formats and forward
+structured reads here. Counts/breakdowns/rows share a read-only repeatable-read transaction; archived
+spaces are excluded. Semantic and citation-text retrieval reads `pocdb.rag.chunks` in the same
+PostgreSQL instance. No business table replicas are maintained. See
+[AI_ARCHITECTURE.md](AI_ARCHITECTURE.md).
