@@ -118,8 +118,11 @@ project.
 
 - LiteLLM keeps keys, budgets and spend in a `litellm` database on the shared PostgreSQL instance.
 - The master key defaults to `sk-litellm-local-master-key` in `docker-compose.yml` (override with
-  `LITELLM_MASTER_KEY`). The virtual keys are fixed local values in `.env.example`. Outside local
-  development, all of them and the provider keys come from a secrets manager.
+  `LITELLM_MASTER_KEY`). The virtual keys are fixed local values in `.env.example`. These are public,
+  so outside local development all of them and the provider keys come from a secrets manager: pass
+  the values to `scripts/litellm_provision_keys.sh` as `LITELLM_MASTER_KEY`, `LITELLM_AI_SERVICE_KEY`
+  and `LITELLM_VEC_SERVICE_KEY` (it refuses the local values for any gateway but `localhost:4000`), and
+  give the services the same values as their API keys. A new value rotates the key.
 - The gateway is a hard dependency: if it is down, every AI feature fails. The container uses
   `restart: unless-stopped`, and `scripts/dev_up.sh` health-checks it before starting the services.
 - `PHOENIX_COLLECTOR_ENDPOINT` points at `host.docker.internal:4317` because Phoenix runs in the

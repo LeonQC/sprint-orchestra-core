@@ -209,8 +209,8 @@ class Settings(BaseSettings):
         if offenders:
             raise ValueError(
                 f"environment={self.environment!r} but these still hold their local development "
-                f"defaults: {', '.join(offenders)}. Set them from the deployment's secret store "
-                f"(see README 'Deploying'), or set AI_ENVIRONMENT=local if this really is a laptop."
+                f"defaults: {', '.join(offenders)}. Set them from the deployment's secret store, "
+                f"or set AI_ENVIRONMENT=local if this really is a laptop."
             )
         return self
 
