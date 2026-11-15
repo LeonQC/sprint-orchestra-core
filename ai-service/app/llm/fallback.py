@@ -1,9 +1,9 @@
 """Which model actually answered an LLM call, so a gateway fallback is priced and counted correctly.
 
 LiteLLM echoes the requested route alias (`openai-production`) in a response's `model` field, and
-reports the fallback deployment's real model name (`claude-sonnet-5`) when it fell back (verified
-2026-10-28 on both /v1/responses and /chat/completions). Without this, fallback tokens were priced at
-the requested model's rate: one fallback /ask cost ~$0.11 and was recorded as ~$0.008.
+reports the fallback deployment's real model name (`gemini-3.8-flash`) when it fell back, on both
+/v1/responses and /chat/completions. Without this, fallback tokens would be priced at the requested
+model's rate, and a fallback /ask would be recorded at a fraction of what it cost.
 """
 from __future__ import annotations
 

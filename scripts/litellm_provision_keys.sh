@@ -32,7 +32,7 @@ auth=(-H "Authorization: Bearer ${MASTER_KEY}" -H "Content-Type: application/jso
 #   contextualization (claude-context, off by default). Guarded on throughput (rpm + parallelism);
 #   higher rpm because ingestion arrives in bursts. No spend budget yet.
 specs=(
-  "sk-ai-service-local|openai-production,claude-production|{\"max_budget\": 100, \"rpm_limit\": 4000, \"tpm_limit\": 1600000, \"key_alias\": \"ai-service\"}"
+  "sk-ai-service-local|openai-production,gemini-production,claude-production|{\"max_budget\": 100, \"rpm_limit\": 4000, \"tpm_limit\": 1600000, \"key_alias\": \"ai-service\"}"
   "sk-vec-service-local|openai-embedding-3-small,claude-vlm,gemini-vlm,claude-context|{\"rpm_limit\": 600, \"max_parallel_requests\": 32, \"key_alias\": \"vectorization-service\"}"
 )
 

@@ -39,7 +39,8 @@ Services reference the alias, never a provider model id:
 | `model_name` | Used by | Backend |
 |---|---|---|
 | `openai-production` | ai-service: agent, router, structured features (`AI_AGENT_MODEL`) | OpenAI `gpt-5.6-luna` |
-| `claude-production` | Fallback for `openai-production`; ai-service with `AI_LLM_PROVIDER=anthropic` | Anthropic `claude-sonnet-5` |
+| `gemini-production` | Fallback for `openai-production` | Google `gemini-3.8-flash` |
+| `claude-production` | Alternate answer model (`AI_AGENT_MODEL=claude-production`) | Anthropic `claude-sonnet-5` |
 | `openai-embedding-3-small` | vectorization-service embeddings (`VEC_EMBEDDING_MODEL`) | OpenAI `text-embedding-3-small` |
 | `gemini-vlm` | vectorization-service VLM fallback (`VEC_VLM_OPENAI_MODEL`) | Google `gemini-3.8-flash` |
 | `claude-vlm` | Alternative VLM route | Anthropic `claude-sonnet-5` |
@@ -49,8 +50,12 @@ Services reference the alias, never a provider model id:
 ## Provider fallback
 
 `router_settings.fallbacks` sends a failed `openai-production` call (5xx, timeout, 429, connection
-error, after `num_retries: 2`) to `claude-production`. Retries happen only here; ai-service's clients
+error, after `num_retries: 2`) to `gemini-production`. Retries happen only here; ai-service's clients
 run with `max_retries=0`.
+
+Gemini 3.8 Flash is in the same price tier as gpt-5.6-luna ($0.75/$3.75 per 1M tokens, against
+Sonnet 5's $2/$10), and it handles both request shapes ai-service sends: the agent's Responses-API tool
+calls and the structured features' `json_schema` output. A fallback /ask costs about 5x a normal one.
 
 Only the answer model fails over. Embeddings must not switch models (query vectors would stop matching
 the index), and judges must stay fixed.
@@ -63,8 +68,8 @@ How a caller can tell a fallback happened:
 
 | | Normal | After fallback |
 |---|---|---|
-| Response body `model` | `openai-production` | `claude-sonnet-5` |
-| `x-litellm-model-group` header | `openai-production` | `claude-production` |
+| Response body `model` | `openai-production` | `gemini-3.8-flash` |
+| `x-litellm-model-group` header | `openai-production` | `gemini-production` |
 | `x-litellm-attempted-fallbacks` header | `0` | `1` |
 
 `ai-service/app/llm/fallback.py` reads the body's `model` to price fallback tokens correctly and count
@@ -84,7 +89,7 @@ own model allow-list, budget and rate limit:
 
 | Key | Models | Limits |
 |---|---|---|
-| `sk-ai-service-local` | `openai-production`, `claude-production` | `max_budget: $100`, `rpm_limit: 4000`, `tpm_limit: 1600000` |
+| `sk-ai-service-local` | `openai-production`, `gemini-production`, `claude-production` | `max_budget: $100`, `rpm_limit: 4000`, `tpm_limit: 1600000` |
 | `sk-vec-service-local` | `openai-embedding-3-small`, `claude-vlm`, `gemini-vlm`, `claude-context` | `rpm_limit: 600`, `max_parallel_requests: 32` |
 
 A key calling a model outside its allow-list gets a 403; over its rate limit or budget, a 429. Edit the

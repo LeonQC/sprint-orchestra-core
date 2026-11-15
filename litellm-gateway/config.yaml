@@ -41,8 +41,8 @@ model_list:
 
   - model_name: claude-production
     litellm_params:
-      # The alternate answer model: the fallback for openai-production, or the primary with
-      # AI_AGENT_MODEL=claude-production. Priced in app/llm/pricing.py (via _GATEWAY_ALIASES).
+      # An alternate answer model, used as the primary with AI_AGENT_MODEL=claude-production. Priced in
+      # app/llm/pricing.py (via _GATEWAY_ALIASES).
       model: anthropic/claude-sonnet-5
       api_key: os.environ/ANTHROPIC_API_KEY
 
@@ -72,9 +72,17 @@ model_list:
       model: openai/gpt-5.6-luna
       api_key: os.environ/OPENAI_API_KEY
 
+  - model_name: gemini-production
+    litellm_params:
+      # The fallback for openai-production. Same price tier as gpt-5.6-luna ($0.75/$3.75 per 1M tokens
+      # vs Sonnet's $2/$10), and it handles the agent's Responses-API tool calls and the structured
+      # features' json_schema output. Priced in app/llm/pricing.py (via _GATEWAY_ALIASES).
+      model: gemini/gemini-3.8-flash
+      api_key: os.environ/GEMINI_API_KEY
+
 router_settings:
   # Provider failover for the answer model only. If OpenAI errors (5xx, timeout, 429, outage) after
-  # `num_retries`, the same request goes to claude-production, which handles the agent's Responses-API
+  # `num_retries`, the same request goes to gemini-production, which handles the agent's Responses-API
   # tool calls. `allowed_fails`/`cooldown_time` are set, but cooldown only rotates between
   # deployments of the same route, and LiteLLM skips it for single-deployment routes like all of
   # these; fail-fast is ai-service's circuit breaker (app/llm/circuit_breaker.py). See README "Provider
@@ -89,7 +97,7 @@ router_settings:
   allowed_fails: 3
   cooldown_time: 30
   fallbacks:
-    - openai-production: ["claude-production"]
+    - openai-production: ["gemini-production"]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

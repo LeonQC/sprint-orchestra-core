@@ -189,10 +189,10 @@ groups:
     interval: 15s
     rules:
       - alert: LLMFallbackActive
-        # The gateway is answering with claude-production because openai-production keeps failing
+        # The gateway is answering with gemini-production because openai-production keeps failing
         # (litellm-gateway/config.yaml `router_settings.fallbacks`). Users still get answers, which is
         # the point of the fallback and also why this needs an alert: nothing else breaks. Each
-        # fallback call is priced at Claude's rate (~15x luna per /ask), so a sustained fallback is a
+        # fallback call is priced at Gemini 3.8 Flash's rate (~5x luna per /ask), so a sustained fallback is a
         # cost change and an OpenAI incident at the same time.
         expr: sum(rate(llm_fallbacks_total[10m])) by (requested, served) > 0
         for: 5m
@@ -214,7 +214,7 @@ groups:
           slo: llm-availability
         annotations:
           summary: "Ask AI is serving sources only: no answer model is reachable"
-          description: "Both openai-production and its claude-production fallback are failing. Check the gateway logs and both providers' status pages."
+          description: "Both openai-production and its gemini-production fallback are failing. Check the gateway logs and both providers' status pages."
 
       - alert: SearchDegradedToBm25
         # Query embeddings are failing and /search is answering hybrid requests with BM25 only

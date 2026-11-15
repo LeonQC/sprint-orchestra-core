@@ -58,6 +58,12 @@ _OPENAI_PRICING = {
     "gpt-5.4-pro": ModelPrice(30.00, 180.00),
 }
 
+# $ per 1M tokens, as listed in LiteLLM's model cost map (2026-11-15). gemini-3.8-flash is the answer
+# model's fallback (gemini-production).
+_GOOGLE_PRICING = {
+    "gemini-3.8-flash": ModelPrice(0.75, 3.75),
+}
+
 _FREE = ModelPrice(0.0, 0.0)
 
 # Gateway route aliases (litellm-gateway/config.yaml) -> real model names, so our /stats estimate
@@ -66,6 +72,7 @@ _FREE = ModelPrice(0.0, 0.0)
 _GATEWAY_ALIASES = {
     "openai-production": "gpt-5.6-luna",
     "claude-production": "claude-sonnet-5",
+    "gemini-production": "gemini-3.8-flash",
     "claude-judge": "claude-sonnet-5",
 }
 
@@ -73,18 +80,18 @@ _GATEWAY_ALIASES = {
 def price_for_model(model: str) -> ModelPrice:
     """Model name -> $/1M prices; unknown or self-hosted models are $0.
 
-    Looks up both provider tables by exact name (names never collide), after resolving gateway
+    Looks up the provider tables by exact name (names never collide), after resolving gateway
     aliases. Unknown names return $0 instead of raising: underestimating is safer than breaking /ask
     over a price lookup — but it means a newly added model must be priced, or it reads as free.
     """
     model = _GATEWAY_ALIASES.get(model, model)
-    return _ANTHROPIC_PRICING.get(model) or _OPENAI_PRICING.get(model) or _FREE
+    return _ANTHROPIC_PRICING.get(model) or _OPENAI_PRICING.get(model) or _GOOGLE_PRICING.get(model) or _FREE
 
 
 def has_known_price(model: str) -> bool:
     """Whether a hosted model has an explicit price rather than the safe $0 fallback."""
     model = _GATEWAY_ALIASES.get(model, model)
-    return model in _ANTHROPIC_PRICING or model in _OPENAI_PRICING
+    return model in _ANTHROPIC_PRICING or model in _OPENAI_PRICING or model in _GOOGLE_PRICING
 
 
 def resolve_model(model: str) -> str:

@@ -177,7 +177,7 @@ degrades instead of failing. Without them, the only symptom is slightly worse an
 
 | Alert | Fires when | What users get meanwhile |
 |---|---|---|
-| `LLMFallbackActive` | `llm_fallbacks_total` has risen for 5 min | Claude answers instead of OpenAI, at a higher cost per call |
+| `LLMFallbackActive` | `llm_fallbacks_total` has risen for 5 min | Gemini answers instead of OpenAI, at a higher cost per call (about 5x per /ask) |
 | `AskAnswerModelsUnavailable` (critical) | `agent_ask_degraded_total{reason="answer_model_unavailable"}` has risen for 2 min | Ask AI returns sources with no generated answer |
 | `SearchDegradedToBm25` | `search_degraded_total` has risen for 5 min | Search runs on BM25 only; ingestion is paused on the same outage |
 

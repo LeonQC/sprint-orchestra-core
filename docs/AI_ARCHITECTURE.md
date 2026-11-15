@@ -338,7 +338,8 @@ live only in the gateway.
 | Route | Model | Used for |
 |-------|-------|----------|
 | `openai-production` | `gpt-5.6-luna` | Ask AI and every AI feature |
-| `claude-production` | `claude-sonnet-5` | Fallback when OpenAI fails |
+| `gemini-production` | `gemini-3.8-flash` | Fallback when OpenAI fails |
+| `claude-production` | `claude-sonnet-5` | Alternate answer model (`AI_AGENT_MODEL=claude-production`) |
 | `openai-embedding-3-small` | `text-embedding-3-small` | All embeddings |
 | `gemini-vlm` | `gemini-3.8-flash` | Images and PDF pages OCR could not read |
 | `claude-judge`, `gemini-judge` | Sonnet 5, Gemini 3.5 Flash-Lite | Eval grading |
