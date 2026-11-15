@@ -27,7 +27,7 @@ from typing import Callable, List, Tuple
 
 from app.auth.space_membership import NoopSpaceMembershipChecker
 from app.config import Settings
-from app.drafting.instructor_client import build_instructor_client
+from app.llm.instructor_client import build_instructor_client
 from app.sprint_recovery.graph import build_sprint_recovery_graph
 from app.sprint_recovery.state import initial_recovery_state
 from langgraph.checkpoint.memory import InMemorySaver

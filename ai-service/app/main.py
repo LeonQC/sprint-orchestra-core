@@ -26,7 +26,7 @@ from app.cache.embedding_client import EmbeddingClient
 from app.cache.semantic_cache import build_cache
 from app.cache.watermark_client import IndexWatermarkClient, NoopWatermarkClient
 from app.config import get_settings
-from app.drafting.instructor_client import build_instructor_client
+from app.llm.instructor_client import build_instructor_client
 from app.llm.circuit_breaker import ModelUnavailableError
 from app.llm.factory import build_llm_client, build_router_llm_client, describe_llm_runtime
 from app.investigation.graph import MultiAgentRag

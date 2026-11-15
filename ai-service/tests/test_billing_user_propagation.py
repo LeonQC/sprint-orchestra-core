@@ -16,7 +16,7 @@ import json
 import httpx
 import pytest
 
-from app.drafting.instructor_client import _rewrite_request_body
+from app.llm.instructor_client import _rewrite_request_body
 from app.observability import _billing_user
 
 

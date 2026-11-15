@@ -13,7 +13,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from app.api import routes
 from app.auth.space_membership import NoopSpaceMembershipChecker
-from app.drafting.instructor_client import _RequestRewriteTransport
+from app.llm.instructor_client import _RequestRewriteTransport
 from app.llm.circuit_breaker import (
     MODEL_UNAVAILABLE_MESSAGE,
     CircuitOpenError,

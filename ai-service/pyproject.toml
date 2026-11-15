@@ -1,7 +1,7 @@
 [project]
 name = "ai-service"
 version = "0.1.0"
-description = "Agentic RAG: corrective retrieval over vectorization-service's index via Claude tool use."
+description = "Agentic RAG: corrective retrieval over vectorization-service's index, with tool use through the LiteLLM gateway."
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]

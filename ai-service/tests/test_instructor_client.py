@@ -3,7 +3,7 @@ import json
 
 import httpx
 
-from app.drafting.instructor_client import _RequestRewriteTransport
+from app.llm.instructor_client import _RequestRewriteTransport
 
 
 class _FakeWrappedTransport(httpx.AsyncBaseTransport):
