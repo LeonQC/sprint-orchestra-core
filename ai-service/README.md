@@ -99,6 +99,7 @@ AI_ROUTER_MODEL=<gateway route alias>
 AI_ROUTER_OPENAI_BASE_URL=http://localhost:4000
 AI_ROUTER_OPENAI_API_KEY=sk-ai-service-local
 AI_ROUTER_MAX_OUTPUT_TOKENS=128
+AI_ROUTER_REQUEST_TIMEOUT_SECONDS=30
 AI_ROUTER_REASONING_EFFORT=none
 ```
 
@@ -280,7 +281,8 @@ for human review and edits, then create the epic, sprints, issues and dependenci
 idempotency keys. A plan needs a proposal and at least one stated requirement; requirements are kept
 through every refine round.
 
-With a `spaceId`, planning is grounded in the space's own history:
+With a `spaceId`, planning is grounded in the space's own history
+(`AI_EPIC_PLANNING_GROUNDING_ENABLED`, on by default):
 
 - **Retrieval** (`app/planning/grounding.py`) finds similar issues, backfilled with the space's most
   recent finished work, and each exemplar says which tier it came from (`similar` or `recent`).

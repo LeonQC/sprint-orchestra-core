@@ -1,8 +1,10 @@
 name: CI
 
-# Runs on every push and PR — the guardrail that would have caught a real backfill_jira_backend.py
-# bug before it ever touched real data: that bug had a real regression test written for it, but
-# nothing ran that test automatically until now.
+# Runs every service's tests on each push and PR.
+#
+# The PostgreSQL and Redis services below are throwaway containers that exist only for one job run
+# and hold only test data. poc/poc123 is the local development credential, not a real secret.
+# Deployed environments read their credentials from AWS Secrets Manager.
 on:
   push:
   pull_request:
@@ -13,11 +15,8 @@ jobs:
     defaults:
       run:
         working-directory: ai-service
-    # Same postgres:poc/poc123/pocdb shape as the jira-backend job below — without this service,
-    # tests/test_rollout_graph.py's and tests/test_sprint_recovery_graph.py's real AsyncPostgresSaver
-    # crash-resume tests (the proof of the durable-execution/idempotency claims, not just an
-    # assertion) `pytest.importorskip`/connect-and-skip instead of running — this
-    # service is what turns those from "developer has Postgres running locally" into an actual CI gate.
+    # PostgreSQL runs the Plan Epic and Sprint Recovery checkpoint tests (crash and resume against a
+    # real AsyncPostgresSaver); without it they are skipped. Redis Stack runs the answer-cache tests.
     services:
       postgres:
         image: postgres:16
@@ -123,10 +122,8 @@ jobs:
 
   jira-backend:
     runs-on: ubuntu-latest
-    # Matches jira-backend/src/main/resources/application.yml's hardcoded datasource credentials
-    # exactly (same poc/poc123/pocdb this project's own local docker-compose already uses), so no
-    # override/profile is needed — Flyway migrates this empty container on app startup like any other
-    # fresh environment.
+    # Same credentials as application.yml's local defaults, so no profile is needed. Flyway migrates
+    # the empty database on startup, which also checks that V1..V36 apply cleanly to a fresh database.
     services:
       postgres:
         image: postgres:16
