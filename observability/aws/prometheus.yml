@@ -1,0 +1,39 @@
+# AWS version of ../prometheus.yml: same rules and Alertmanager, different targets. Baked into the
+# image by Dockerfile.prometheus.
+global:
+  scrape_interval: 30s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+# `<service>-tasks.orchestra.internal` has one A record per running task (Cloud Map). Going through
+# the Service Connect name instead would reach one random task per scrape.
+scrape_configs:
+  - job_name: jira-backend
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: ["jira-backend-tasks.orchestra.internal"]
+        type: A
+        port: 8081
+
+  - job_name: ai-service
+    dns_sd_configs:
+      - names: ["ai-service-tasks.orchestra.internal"]
+        type: A
+        port: 8200
+
+  - job_name: vectorization-service
+    dns_sd_configs:
+      - names: ["vectorization-service-tasks.orchestra.internal"]
+        type: A
+        port: 8100
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

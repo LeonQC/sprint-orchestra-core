@@ -1,0 +1,40 @@
+global:
+  scrape_interval: 5s
+  # Rules are evaluated on their own clock, independent of scraping. Left at the 15s each group
+  # declares; a 5s evaluation of a 5m rate() window would just recompute the same number four extra
+  # times per scrape.
+  evaluation_interval: 15s
+
+# Service-level objectives and the alerts derived from them. Without this the repo could graph a P95
+# but not say whether it was acceptable — see observability/rules/slo.yml.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# Prometheus decides that an alert is firing; Alertmanager decides who hears about it (Slack here),
+# groups related alerts into one message and repeats it while it keeps firing.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: vectorization-service
+    static_configs:
+      - targets: ["host.docker.internal:8100"]
+
+  - job_name: ai-service
+    static_configs:
+      - targets: ["host.docker.internal:8200"]
+
+  # Spring Boot Actuator + Micrometer; request metrics are `http_server_requests_seconds_*`.
+  - job_name: jira-backend
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+
+  # Redis's own health, which no application metric can report. ai-service can measure how often it
+  # gets a hit; only Redis can say whether it is evicting entries under memory pressure — a hit rate
+  # that decays as the corpus grows, with no code change to blame, is invisible from the app side.
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

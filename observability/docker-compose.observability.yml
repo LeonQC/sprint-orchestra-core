@@ -1,0 +1,114 @@
+# Optional overlay — NOT part of the main docker-compose.yml on purpose, so a fresh `docker compose
+# up` doesn't silently start extra containers nobody asked for. `scripts/dev_up.sh` starts it with the
+# rest of the local stack; to run it on its own:
+#
+#   docker compose -f observability/docker-compose.observability.yml up -d
+#
+# Both vectorization-service and ai-service run directly via `uvicorn` on the host (see their own
+# READMEs), not inside this compose network — so Prometheus scrapes them via `host.docker.internal`,
+# Docker Desktop's built-in DNS name for the host machine (works out of the box on macOS/Windows; on
+# Linux add `extra_hosts: ["host.docker.internal:host-gateway"]` under `prometheus` below).
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: orchestra-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+
+  # Sends Prometheus's firing alerts to Slack (see alertmanager/alertmanager.yml). UI at :9093.
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: orchestra-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: orchestra-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # Redis's own health — the half of "cache observability" the application cannot report on itself.
+  # ai-service counts hits and misses; only Redis knows whether it is evicting entries under memory
+  # pressure, how much memory the cached answers and their HNSW index actually occupy, or that it is
+  # about to stop accepting writes. Joins this compose network and reaches the `redis` container by
+  # its host port, since that container belongs to the root docker-compose.yml, not this overlay.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    container_name: orchestra-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://host.docker.internal:6379"
+    ports:
+      - "9121:9121"
+
+  # Trace-level observability — the third pillar alongside Prometheus (metrics, above) and structured
+  # logs (ai-service/app/logging_config.py): one LLM call's full input/output and, across a CragAgent
+  # tool loop, how successive calls chain together. ai-service (running on the host, same as it talks
+  # to Prometheus) sends OTLP spans to this container's :4317; browse traces at :6006. See
+  # ai-service/app/tracing.py for exactly which LLM client paths are instrumented.
+  #
+  # Traces are kept in POSTGRES, not in Phoenix's default embedded SQLite. Phoenix stopped being a
+  # thing you glance at during a debugging session the moment it became the store of record for who
+  # spent what on which AI feature (ai-service/app/llm/usage_ledger.py) — cost attribution is only
+  # worth having if last month's data is still there to attribute. Under the default the entire trace
+  # history is a SQLite file inside the container, which is to say: one `docker rm` from gone, with
+  # no backup, no point-in-time recovery, and no way to notice until the question that needed it is
+  # already being asked.
+  #
+  # It reuses the `postgres` container from the root docker-compose.yml, in its own `phoenix`
+  # database, exactly as the litellm gateway already does for its own metadata — one Postgres to
+  # operate and back up locally rather than a third one to forget about. Create it once (idempotent,
+  # and `scripts/dev_up.sh` now does it for you):
+  #
+  #   docker exec orchestra-postgres psql -U poc -d pocdb -c "CREATE DATABASE phoenix;"
+  #
+  # From here, protecting trace history is ordinary database work — `pg_dump` on a schedule, or RDS
+  # automated snapshots once this is not localhost. That is the entire point of the switch: nothing
+  # about Phoenix has to be special-cased, because it is now just another Postgres database.
+  #
+  # `host.docker.internal` for the same reason `prometheus` uses it above: this overlay is a separate
+  # compose project from the root one, so the `postgres` service is reachable only by host port. On
+  # Linux, add `extra_hosts: ["host.docker.internal:host-gateway"]` here too.
+  phoenix:
+    image: arizephoenix/phoenix:version-19.5.0  # same version as on AWS
+    container_name: orchestra-phoenix
+    ports:
+      - "6006:6006"  # UI + REST
+      - "4317:4317"  # OTLP gRPC collector
+    environment:
+      PHOENIX_SQL_DATABASE_URL: ${PHOENIX_SQL_DATABASE_URL:-postgresql://poc:poc123@host.docker.internal:5432/phoenix}
+    volumes:
+      # Still mounted with Postgres configured: traces live in the database now, but Phoenix keeps
+      # local working files here, and leaving it unmounted would put them back in the container's
+      # writable layer — the exact thing this service just stopped doing with its most valuable data.
+      - phoenix-data:/mnt/data
+
+volumes:
+  prometheus-data:
+  alertmanager-data:
+  grafana-data:
+  phoenix-data:

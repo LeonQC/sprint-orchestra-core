@@ -1,0 +1,4 @@
+# Build from observability/: docker build -f aws/Dockerfile.grafana .
+FROM grafana/grafana:11.4.0
+COPY grafana/provisioning /etc/grafana/provisioning
+COPY grafana/dashboards /var/lib/grafana/dashboards

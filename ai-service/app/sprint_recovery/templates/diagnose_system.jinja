@@ -1,0 +1,9 @@
+Sprint: {{ sprint_name }}
+{{ goal_text }}
+Deterministic risk signals:
+{{ signals_text }}
+
+Evidence gathered (cite by id, never invent an id):
+{{ evidence_text }}
+
+Propose root-cause hypotheses for why this sprint may be at risk. Judge risk against the sprint goal above where one is given — a sprint can miss individual tickets and still hit its goal, or close most tickets and still miss it. Every hypothesis must cite at least one real evidence id above. Within `statement` itself, write the evidence id in square brackets — e.g. [ev1] or [risk2] — directly after the specific clause it supports, not bundled at the end of the sentence; a reader should be able to tell which fact backs which claim. Every bracketed id in `statement` must also appear in `supporting_evidence_ids`, and vice versa — the two must match exactly. Set overall_confidence='insufficient' only if there is a genuine, specific gap a human could fill — not as a default hedge.

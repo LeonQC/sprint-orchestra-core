@@ -1,5 +1,5 @@
 server:
-  # Backend listens here; Spring Cloud Gateway (subproject :gateway) uses 8080 and proxies to this port.
+  # Browsers reach this through the Vite dev proxy locally (CloudFront + ALB on AWS), never directly.
   port: 8081
 
 spring:
@@ -51,7 +51,7 @@ spring:
       properties:
         # Publishes run on the request thread (AFTER_COMMIT listener). Default max.block.ms
         # is 60s — a dead broker would hold every attachment upload response hostage until
-        # the gateway times out (503 fallback). Fail fast and just log the warning instead.
+        # the client times out. Fail fast and just log the warning instead.
         max.block.ms: ${SPRING_KAFKA_PRODUCER_MAX_BLOCK_MS:2000}
 
 springdoc:
@@ -82,13 +82,48 @@ management:
   metrics:
     tags:
       application: jira-backend
+    # Buckets let Prometheus compute P95 across instances; client-side percentiles can't be combined.
+    distribution:
+      percentiles-histogram:
+        "[http.server.requests]": true
 
 app:
+  # OpenSearch owns the global search (see com.jiraagentic.app.search). Postgres keeps no full-text
+  # index at all — it is the relational source of truth these indices are rebuilt from, via
+  # POST /internal/search/reindex. If the cluster is unreachable the service still starts and every
+  # other endpoint works; search returns 503 and logs why.
+  #
+  # `uri` points at an Amazon OpenSearch Service domain endpoint in a deployed environment and at
+  # the docker-compose container locally.
+  opensearch:
+    uri: ${APP_OPENSEARCH_URI:http://localhost:9200}
+    # Search is a foreground, user-typed interaction: a wedged cluster must fail fast rather than
+    # hold a servlet thread until the browser gives up.
+    connect-timeout-ms: ${APP_OPENSEARCH_CONNECT_TIMEOUT_MS:2000}
+    socket-timeout-ms: ${APP_OPENSEARCH_SOCKET_TIMEOUT_MS:5000}
+    index:
+      issues: ${APP_OPENSEARCH_INDEX_ISSUES:orchestra-issues}
+      comments: ${APP_OPENSEARCH_INDEX_COMMENTS:orchestra-comments}
   kafka:
     # Publish after attachment upload (after DB commit). Payload is tracking-only for pipelines / POC.
     attachment-ingestion:
-      enabled: ${APP_KAFKA_ATTACHMENT_INGESTION_ENABLED:false}
+      enabled: ${APP_KAFKA_ATTACHMENT_INGESTION_ENABLED:true}
       topic: ${APP_KAFKA_ATTACHMENT_INGESTION_TOPIC:jira.attachment.ingestion}
+    # Publish after issue/comment create/update/delete (after DB commit). Consumed by the
+    # vectorization-service for RAG ingestion (chunk -> embed -> upsert into pgvector).
+    #
+    # **Found live, not hypothetically**: this defaulted to `false` while attachment-ingestion above
+    # defaults to `true` -- an inconsistency, not a deliberate choice (nothing in this codebase ever
+    # explains why content sync would be opt-in when it's the pipeline every other RAG feature and
+    # sprint-recovery's real-time Kafka reevaluation trigger (app/sprint_recovery/kafka_trigger.py)
+    # actually depend on). With it left at the default, this dev instance silently ran for a long time
+    # with jira-backend writes never reaching vectorization-service's index at all -- every content
+    # change needed a manual backfill script to become visible, indistinguishable from a real
+    # regression. Defaulting to `true`, matching attachment-ingestion, so a fresh checkout/deploy has
+    # working sync out of the box; the env var still lets an operator turn it off deliberately.
+    content-ingestion:
+      enabled: ${APP_KAFKA_CONTENT_INGESTION_ENABLED:true}
+      topic: ${APP_KAFKA_CONTENT_INGESTION_TOPIC:jira.content.ingestion}
 
   # GitHub OAuth. Set GITHUB_OAUTH_ENABLED=true and OAuth app credentials from GitHub Developer settings.
   oauth2:
@@ -96,32 +131,40 @@ app:
       enabled: ${GITHUB_OAUTH_ENABLED:false}
       client-id: ${GITHUB_CLIENT_ID:}
       client-secret: ${GITHUB_CLIENT_SECRET:}
-      # Keep callback stable behind gateway/proxy to avoid GitHub redirect_uri mismatch.
-      redirect-uri: ${GITHUB_OAUTH_REDIRECT_URI:http://localhost:8080/login/oauth2/code/github}
+      # The browser-facing origin (Vite dev proxy locally), not :8081, so the callback lands on the
+      # same origin the login started from. Must match the GitHub OAuth App's callback URL.
+      redirect-uri: ${GITHUB_OAUTH_REDIRECT_URI:http://localhost:5173/login/oauth2/code/github}
   frontend:
     # Where to send the browser after GitHub login (fragment carries JWT).
     base-url: ${FRONTEND_BASE_URL:http://localhost:5173}
   security:
-    # Shared with the API gateway; only requests that include header X-Gateway-Internal with this value are accepted.
-    internal-gateway-token: ${INTERNAL_GATEWAY_TOKEN:dev-internal-gateway-token-min-32-chars-long!!}
+    # Shared secret for service-to-service calls (header X-Internal-Token), e.g. ai-service and ops
+    # scripts. Also signs AI feedback receipts. In production, set via env/secret manager.
+    internal-service-token: ${INTERNAL_SERVICE_TOKEN:dev-internal-service-token-min-32-chars-long!!}
     jwt:
-      # Must be long enough for HS256 (>=32 bytes).
-      # In production, set via env/secret manager.
-      secret: ${APP_JWT_SECRET:change-this-dev-secret-key-change-this}
       issuer: jira-agentic-ai
       expires-minutes: 120
+      # RS256 signing key (PKCS#8 PEM). In production, set from a secret manager.
+      private-key: ${APP_JWT_PRIVATE_KEY:}
+      # Local dev only: without private-key, load this file, or generate it on first start.
+      private-key-path: ${APP_JWT_PRIVATE_KEY_PATH:${user.home}/.sprint-orchestra/jwt-dev-signing-key.pem}
+      # Set to false in production so a missing key fails startup instead of each instance minting its own.
+      allow-generated-key: ${APP_JWT_ALLOW_GENERATED_KEY:true}
+      # Set to verify tokens from an external issuer (Cognito, Auth0) instead of our own key.
+      jwk-set-uri: ${APP_JWT_JWK_SET_URI:}
   attachments:
     # PoC default: use local MinIO (S3-compatible) for attachment storage.
     storage: s3
     # Kept for fallback when storage=local.
     dir: ${user.home}/.jira-agentic-ai/attachments
     s3:
-      endpoint: http://localhost:9000
-      region: us-east-1
-      bucket: jira-attachments
-      access-key: minioadmin
-      secret-key: minioadmin
-      path-style-access: true
+      # Local MinIO. On AWS set the endpoint and both keys to empty (real S3 + the ECS task role).
+      endpoint: ${APP_ATTACHMENTS_S3_ENDPOINT:http://localhost:9000}
+      region: ${APP_ATTACHMENTS_S3_REGION:us-east-1}
+      bucket: ${APP_ATTACHMENTS_S3_BUCKET:jira-attachments}
+      access-key: ${APP_ATTACHMENTS_S3_ACCESS_KEY:minioadmin}
+      secret-key: ${APP_ATTACHMENTS_S3_SECRET_KEY:minioadmin}
+      path-style-access: ${APP_ATTACHMENTS_S3_PATH_STYLE_ACCESS:true}
 
   github:
     # GitHub Personal Access Token used to enrich code link metadata

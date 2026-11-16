@@ -16,7 +16,6 @@ subprojects {
 }
 
 val springBootBomVersion = "3.2.0"
-val springCloudBomVersion = "2023.0.3"
 
 subprojects {
     plugins.withId("org.springframework.boot") {
@@ -27,9 +26,6 @@ subprojects {
             add("annotationProcessor", bootBom)
             add("testImplementation", bootBom)
             add("testRuntimeOnly", bootBom)
-            if (project.name == "gateway") {
-                add("implementation", enforcedPlatform("org.springframework.cloud:spring-cloud-dependencies:$springCloudBomVersion"))
-            }
         }
     }
 }
@@ -48,11 +44,12 @@ val bootRunEnvKeys = listOf(
     "APP_GITHUB_TOKEN",
     "APP_KAFKA_ATTACHMENT_INGESTION_ENABLED",
     "APP_KAFKA_ATTACHMENT_INGESTION_TOPIC",
-    "APP_JWT_SECRET",
-    "APP_JWT_ISSUER",
-    "INTERNAL_GATEWAY_TOKEN",
+    "APP_JWT_PRIVATE_KEY",
+    "APP_JWT_PRIVATE_KEY_PATH",
+    "APP_JWT_ALLOW_GENERATED_KEY",
+    "APP_JWT_JWK_SET_URI",
+    "INTERNAL_SERVICE_TOKEN",
     "SPRING_KAFKA_BOOTSTRAP_SERVERS",
-    "TMP_KAFKA_POC_GROUP_ID",
 )
 
 subprojects {
@@ -79,13 +76,8 @@ tasks.register<Exec>("devStopBackend") {
     killPort(8081)
 }
 
-tasks.register<Exec>("devStopGateway") {
-    description = "Stop any process listening on gateway port 8080"
-    killPort(8080)
-}
-
 tasks.register("devStopDevPorts") {
     group = "dev"
-    description = "Stop backend (8081) and gateway (8080) before compound run configs"
-    dependsOn("devStopBackend", "devStopGateway")
+    description = "Stop backend (8081) before compound run configs"
+    dependsOn("devStopBackend")
 }

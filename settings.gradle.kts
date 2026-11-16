@@ -6,4 +6,4 @@ pluginManagement {
 
 rootProject.name = "jira-agentic-ai"
 
-include("jira-backend", "gateway", "tmp-kafka-consumer-poc")
+include("jira-backend")

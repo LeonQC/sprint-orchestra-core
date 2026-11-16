@@ -20,13 +20,15 @@ public class IssueController {
     private final IssueService issueService;
 
     @GetMapping
-    public List<IssueDto> getBySpace(@PathVariable Long spaceId) {
-        return issueService.findBySpace(spaceId);
+    public List<IssueDto> getBySpace(@PathVariable Long spaceId, Authentication authentication) {
+        // extractUidOrNull, not extractUid: a trusted internal caller (ai-service) has no end-user
+        // identity and must still be able to read — see IssueService.requireSpaceMembership.
+        return issueService.findBySpace(spaceId, AuthSupport.extractUidOrNull(authentication));
     }
 
     @GetMapping("/{issueKey}")
-    public IssueDto getByKey(@PathVariable String issueKey) {
-        return issueService.findByKey(issueKey);
+    public IssueDto getByKey(@PathVariable Long spaceId, @PathVariable String issueKey) {
+        return issueService.findByKey(spaceId, issueKey);
     }
 
     @PostMapping
@@ -40,15 +42,19 @@ public class IssueController {
 
     @PutMapping("/{issueKey}")
     public IssueDto update(
+            @PathVariable Long spaceId,
             @PathVariable String issueKey,
             @RequestBody UpdateIssueRequest req,
             Authentication authentication) {
-        return issueService.update(issueKey, req, AuthSupport.extractUid(authentication));
+        return issueService.update(spaceId, issueKey, req, AuthSupport.extractUid(authentication));
     }
 
     @DeleteMapping("/{issueKey}")
-    public ResponseEntity<Void> delete(@PathVariable String issueKey, Authentication authentication) {
-        issueService.delete(issueKey, AuthSupport.extractUid(authentication));
+    public ResponseEntity<Void> delete(
+            @PathVariable Long spaceId,
+            @PathVariable String issueKey,
+            Authentication authentication) {
+        issueService.delete(spaceId, issueKey, AuthSupport.extractUid(authentication));
         return ResponseEntity.noContent().build();
     }
 }

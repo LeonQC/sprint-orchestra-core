@@ -41,7 +41,7 @@ class JiraAgenticAiApplicationTests {
 	}
 
 	@Test
-	void healthEndpointsAreAvailableWithoutGatewayHeader() throws Exception {
+	void healthEndpointsAreAvailableWithoutToken() throws Exception {
 		mockMvc.perform(get("/actuator/health"))
 				.andExpect(status().isOk())
 				.andExpect(jsonPath("$.status").value("UP"));
@@ -56,7 +56,7 @@ class JiraAgenticAiApplicationTests {
 	}
 
 	@Test
-	void prometheusEndpointIsAvailableWithoutGatewayHeader() throws Exception {
+	void prometheusEndpointIsAvailableWithoutToken() throws Exception {
 		mockMvc.perform(get("/actuator/prometheus"))
 				.andExpect(status().isOk())
 				.andExpect(content().string(containsString("jvm_memory_used_bytes")))

@@ -1,0 +1,27 @@
+# Routes the alerts in rules/slo.yml to Slack. The webhook URL is a secret, so it lives in
+# alertmanager/slack_webhook_url (gitignored), not here. Without that file, alerts still show up at
+# http://localhost:9093 and only the Slack send fails.
+route:
+  receiver: slack
+  group_by: [alertname, job]
+  # Wait a little so alerts from the same incident arrive as one message.
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: slack
+    slack_configs:
+      - api_url_file: /etc/alertmanager/slack_webhook_url
+        send_resolved: true
+        title: '{{ if eq .Status "firing" }}[{{ .CommonLabels.severity | toUpper }}] {{ else }}[RESOLVED] {{ end }}{{ .CommonLabels.alertname }}'
+        text: |-
+          {{ range .Alerts }}• {{ .Annotations.summary }}
+          {{ if .Annotations.description }}{{ .Annotations.description }}
+          {{ end }}{{ end }}
+
+# A critical alert already says the service is broken; don't also send the warning about the same job.
+inhibit_rules:
+  - source_matchers: [severity="critical"]
+    target_matchers: [severity="warning"]
+    equal: [job]

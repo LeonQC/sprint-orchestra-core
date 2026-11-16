@@ -21,7 +21,7 @@ public class GithubOAuthClientConfig {
     @Value("${app.oauth2.github.client-secret}")
     private String clientSecret;
 
-    @Value("${app.oauth2.github.redirect-uri:http://localhost:8080/login/oauth2/code/github}")
+    @Value("${app.oauth2.github.redirect-uri:http://localhost:5173/login/oauth2/code/github}")
     private String redirectUri;
 
     @PostConstruct

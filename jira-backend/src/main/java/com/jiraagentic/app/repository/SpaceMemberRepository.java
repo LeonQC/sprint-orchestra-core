@@ -7,7 +7,6 @@ import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
 import java.util.List;
-import java.util.Optional;
 
 public interface SpaceMemberRepository extends JpaRepository<SpaceMember, Long> {
 
@@ -18,7 +17,8 @@ public interface SpaceMemberRepository extends JpaRepository<SpaceMember, Long> 
 
     List<SpaceMember> findByUserId(Long userId);
 
-    Optional<SpaceMember> findBySpaceIdAndUserId(Long spaceId, Long userId);
+    @Query("SELECT sm.space.id FROM SpaceMember sm WHERE sm.user.id = :userId AND sm.space.deletedAt IS NULL")
+    List<Long> findActiveSpaceIdsByUserId(@Param("userId") Long userId);
 
     boolean existsBySpaceIdAndUserId(Long spaceId, Long userId);
 

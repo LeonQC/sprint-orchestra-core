@@ -1,0 +1,555 @@
+{
+ "title": "Sprint Orchestra \u2014 RAG Platform",
+ "uid": "rag-platform",
+ "timezone": "browser",
+ "schemaVersion": 39,
+ "version": 2,
+ "refresh": "5s",
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "panels": [
+  {
+   "id": 1,
+   "title": "Request rate (req/s)",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(http_requests_total[1m])) by (job, path)",
+     "legendFormat": "{{job}} {{path}}"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "title": "P95 request latency by service",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 0
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       },
+       {
+        "color": "red",
+        "value": 8
+       }
+      ]
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, job, path))",
+     "legendFormat": "{{job}} {{path}}"
+    }
+   ],
+   "description": "Dashed lines are the SLOs in observability/rules/slo.yml: 1s for vectorization-service /search, 8s for ai-service /ask against a hosted LLM. Against a local single-process LLM server /ask sits near 23s \u2014 a real breach, not a broken panel."
+  },
+  {
+   "id": 3,
+   "title": "5xx error rate",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(http_requests_total{status=~\"5..\"}[1m])) by (job)",
+     "legendFormat": "{{job}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 0.01
+       }
+      ]
+     }
+    },
+    "overrides": []
+   }
+  },
+  {
+   "id": 4,
+   "title": "vectorization-service: /search stage latency (P95)",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 8
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       }
+      ]
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(search_embed_seconds_bucket[5m])) by (le))",
+     "legendFormat": "embed"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(search_retrieval_seconds_bucket[5m])) by (le, mode))",
+     "legendFormat": "retrieval ({{mode}})"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(search_rerank_seconds_bucket[5m])) by (le))",
+     "legendFormat": "rerank"
+    }
+   ]
+  },
+  {
+   "id": 5,
+   "title": "ai-service: /ask stage latency (P95)",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 16
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 8
+       }
+      ]
+     },
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(agent_llm_call_seconds_bucket[5m])) by (le))",
+     "legendFormat": "LLM call"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(agent_retrieval_call_seconds_bucket[5m])) by (le))",
+     "legendFormat": "retrieval tool call"
+    },
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(agent_cache_lookup_seconds_bucket[5m])) by (le))",
+     "legendFormat": "cache lookup"
+    }
+   ]
+  },
+  {
+   "id": 6,
+   "title": "Semantic cache hit rate",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 16
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "green",
+        "value": 0.05
+       }
+      ]
+     },
+     "unit": "percentunit",
+     "min": 0,
+     "max": 1
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "slo:cache_hit_ratio",
+     "legendFormat": "hit rate"
+    },
+    {
+     "expr": "sum(rate(agent_cache_hits_total[5m]))",
+     "legendFormat": "lookups/s (is anyone asking?)"
+    }
+   ],
+   "description": "Below the dashed 5% line with real traffic for 30m fires AnswerCacheNeverHits. A flat 0 here was the only visible symptom of the answer cache being structurally unreachable \u2014 read 'Answer cache writes' next to it before suspecting Redis."
+  },
+  {
+   "id": 7,
+   "title": "Avg corrective-retrieval rounds per /ask",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 24
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "rate(agent_retrieval_rounds_sum[5m]) / rate(agent_retrieval_rounds_count[5m])",
+     "legendFormat": "avg rounds"
+    }
+   ]
+  },
+  {
+   "id": 8,
+   "title": "Cumulative estimated $ spent (since ai-service start)",
+   "type": "stat",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 24
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyUSD"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "expr": "agent_cost_usd_total",
+     "legendFormat": "total $"
+    }
+   ],
+   "description": "Same number as GET /stats' total_cost_usd (app/stats.py) \u2014 pushed to Prometheus (app/observability.py::COST_USD_TOTAL) on every /ask so it can be graphed over time here, not just read as a snapshot."
+  },
+  {
+   "id": 9,
+   "title": "Answer cache writes \u2014 why an answer was or wasn't cached",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 32
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "sum(rate(agent_cache_writes_total[5m])) by (outcome)",
+     "legendFormat": "{{outcome}}"
+    }
+   ],
+   "description": "The read side alone cannot tell 'nothing is ever stored' from 'everything is stored but nobody repeats a question' \u2014 both read 0% hit rate. stored = working; skipped_route = the question routed to a structured tool (expected, and expected to be a large share); skipped_abstained = the corpus doesn't cover it (a content gap, not a cache problem); skipped_request = a follow-up, an attachment-scoped question, or an unavailable freshness token."
+  },
+  {
+   "id": 10,
+   "title": "SLO headroom (1.0 = exactly at the objective)",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 32
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "slo:search_p95_seconds / 1",
+     "legendFormat": "/search P95 vs 1s objective"
+    },
+    {
+     "expr": "slo:ask_p95_seconds / 8",
+     "legendFormat": "/ask P95 vs 8s objective"
+    },
+    {
+     "expr": "slo:error_ratio / 0.01",
+     "legendFormat": "5xx rate vs 1% objective"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     },
+     "min": 0
+    },
+    "overrides": []
+   },
+   "description": "Every objective normalised to its own target so three different units share one axis. Above the dashed 1.0 line means the objective is breached. Targets and their justification live in observability/rules/slo.yml."
+  },
+  {
+   "id": 11,
+   "title": "Redis: memory used by cached answers + HNSW index",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 40
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "redis_memory_used_bytes",
+     "legendFormat": "used"
+    },
+    {
+     "expr": "redis_memory_max_bytes",
+     "legendFormat": "maxmemory (0 = unbounded)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "bytes"
+    },
+    "overrides": []
+   },
+   "description": "The application's own FIFO/max_entries eviction bounds entries per space; this is the eviction it cannot see \u2014 Redis hitting maxmemory and dropping keys underneath it."
+  },
+  {
+   "id": 12,
+   "title": "Redis: keys evicted + expired",
+   "type": "timeseries",
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 40
+   },
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "expr": "rate(redis_evicted_keys_total[5m])",
+     "legendFormat": "evicted/s (memory pressure \u2014 investigate)"
+    },
+    {
+     "expr": "rate(redis_expired_keys_total[5m])",
+     "legendFormat": "expired/s (TTL \u2014 normal)"
+    }
+   ],
+   "description": "Expiry is the cache working as designed. Eviction is Redis running out of room, and shows up as a hit rate that decays as the corpus grows with no code change to blame."
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 48
+   },
+   "id": 13,
+   "type": "timeseries",
+   "title": "jira-backend: request rate by endpoint (req/s)",
+   "targets": [
+    {
+     "expr": "sum(rate(http_server_requests_seconds_count{job=\"jira-backend\",uri!~\"/actuator.*\"}[1m])) by (method, uri)",
+     "legendFormat": "{{method}} {{uri}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "reqps"
+    },
+    "overrides": []
+   }
+  },
+  {
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 48
+   },
+   "id": 14,
+   "type": "timeseries",
+   "title": "jira-backend: P95 latency and 5xx rate",
+   "targets": [
+    {
+     "expr": "histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{job=\"jira-backend\",uri!~\"/actuator.*\"}[5m])) by (le))",
+     "legendFormat": "P95 latency"
+    },
+    {
+     "expr": "slo:error_ratio{job=\"jira-backend\"} or on() vector(0)",
+     "legendFormat": "5xx ratio"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "P95 latency"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "5xx ratio"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percentunit"
+       },
+       {
+        "id": "custom.axisPlacement",
+        "value": "right"
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

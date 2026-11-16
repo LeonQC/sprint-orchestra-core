@@ -1,9 +1,10 @@
 package com.jiraagentic.app.service;
 
 import com.jiraagentic.app.entity.User;
+import com.nimbusds.jose.jwk.RSAKey;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.security.oauth2.jose.jws.MacAlgorithm;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.*;
 import org.springframework.stereotype.Service;
 
@@ -16,8 +17,9 @@ import java.util.Map;
 public class JwtTokenService {
 
     private final JwtEncoder jwtEncoder;
+    private final RSAKey jwtSigningKey;
 
-    @Value("${app.security.jwt.issuer:jira-agentic-ai}")
+    @Value("${app.security.jwt.issuer}")
     private String issuer;
 
     @Value("${app.security.jwt.expires-minutes:120}")
@@ -36,7 +38,7 @@ public class JwtTokenService {
                 )))
                 .build();
 
-        JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();
+        JwsHeader header = JwsHeader.with(SignatureAlgorithm.RS256).keyId(jwtSigningKey.getKeyID()).build();
         return jwtEncoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
     }
 

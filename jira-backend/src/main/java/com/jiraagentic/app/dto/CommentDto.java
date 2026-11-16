@@ -11,6 +11,8 @@ public class CommentDto {
     private Long authorId;
     private String authorName;
     private String content;
+    private Long parentId;
+    private Long replyToId;
     private Instant createdAt;
 
     public static CommentDto from(Comment c) {
@@ -20,6 +22,8 @@ public class CommentDto {
         dto.setAuthorId(c.getAuthor().getId());
         dto.setAuthorName(c.getAuthor().getName());
         dto.setContent(c.getContent());
+        dto.setParentId(c.getParentId());
+        dto.setReplyToId(c.getReplyToId());
         dto.setCreatedAt(c.getCreatedAt());
         return dto;
     }

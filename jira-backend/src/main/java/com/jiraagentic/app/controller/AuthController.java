@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -24,12 +25,32 @@ public class AuthController {
     @Value("${app.oauth2.github.enabled:false}")
     private boolean githubOAuthEnabled;
 
+    @Value("${app.auth.demo-accounts-enabled:true}")
+    private boolean demoAccountsEnabled;
+
     @GetMapping("/config")
     @Operation(summary = "Public auth options for the login UI")
     public Map<String, Boolean> authConfig() {
         return Map.of(
                 "githubOAuthEnabled", githubOAuthEnabled
         );
+    }
+
+    @GetMapping("/demo-accounts")
+    @Operation(summary = "Accounts the login page offers for one-click demo login")
+    public List<Map<String, Object>> demoAccounts() {
+        // Public, so only what the buttons show: no email, no GitHub-only accounts.
+        if (!demoAccountsEnabled) {
+            return List.of();
+        }
+        return userService.findAll().stream()
+                .filter(u -> u.getPassword() != null)
+                .map(u -> Map.<String, Object>of(
+                        "id", u.getId(),
+                        "username", u.getUsername(),
+                        "name", u.getName() == null ? u.getUsername() : u.getName(),
+                        "avatarColor", u.getAvatarColor() == null ? "" : u.getAvatarColor()))
+                .toList();
     }
 
     @PostMapping("/token")
